@@ -224,10 +224,20 @@ TradingAgents works with any market Yahoo Finance covers, using the exchange-suf
 - US: `AAPL`, `SPY`
 - Hong Kong: `0700.HK` · Tokyo: `7203.T` · London: `AZN.L`
 - India: `RELIANCE.NS`, `.BO` · Canada: `.TO` · Australia: `.AX`
-- China A-shares: Shanghai `.SS`, Shenzhen `.SZ` (e.g. `600519.SS` for Kweichow Moutai)
+- China A-shares: any stock on Shanghai, Shenzhen or Beijing, as a bare code or with its exchange (`600519`, `600519.SH`, `000001.SZ`, `920001.BJ`); see below
 - Crypto: `BTC-USD`, `ETH-USD`
 
-#### A-share market data (AKShare)
+#### China A-shares (AKShare)
+
+With the `ashare` extra installed, an A-share stock is analysed from AKShare rather than Yahoo (the `ashare_vendors` setting), falling back to Yahoo for Shanghai and Shenzhen when AKShare cannot answer:
+
+- prices and indicators on forward-adjusted (前复权) daily bars, from Sina, then Eastmoney;
+- fundamentals: the day's valuation multiples, the latest report published by the analysis date, and the Shenwan (申万) industry's valuation and percentile;
+- financial statements dated by their publication (公告日期), so a past run sees only what had been published; A-share reports are year to date;
+- Eastmoney company news (Chinese);
+- company name and Shenwan industry from the local store, with no request.
+
+The market data store below supplies the name, industry and industry valuation; run `tradingagents-ashare sync` before analysing.
 
 A local store of China A-share data, kept under `.akshare_data/` in the repository root (git-ignored), for A-share analysis. It is filled incrementally from AKShare: index and bond series, Shenwan (申万) industry valuations and constituents, margin trading, macro releases, financial reports, the full-market quote, and daily bars for every stock.
 

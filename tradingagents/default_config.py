@@ -165,6 +165,18 @@ def build_default_config() -> dict:
             "macro_data": "fred",                # Options: fred (needs FRED_API_KEY)
             "prediction_markets": "polymarket",  # Options: polymarket (keyless)
         },
+        # China A-share stocks (600519.SS, 000001.SZ, 920001.BJ, or a bare
+        # 600519) take these chains instead of data_vendors: AKShare first, with
+        # its forward-adjusted prices, statements dated by publication, Shenwan
+        # industry context and Eastmoney news; then Yahoo, which covers Shanghai
+        # and Shenzhen but not Beijing. A category missing here uses data_vendors.
+        # Needs: pip install "tradingagents[ashare]".
+        "ashare_vendors": {
+            "core_stock_apis": "akshare,yfinance",
+            "technical_indicators": "akshare,yfinance",
+            "fundamental_data": "akshare,yfinance",
+            "news_data": "akshare,yfinance",
+        },
         # Tool-level configuration (takes precedence over category-level)
         "tool_vendors": {
             # Example: "get_stock_data": "alpha_vantage",  # Override category default
@@ -198,6 +210,7 @@ def build_default_config() -> dict:
             ".TO":  "^GSPTSE",     # Toronto (TSX Composite)
             ".AX":  "^AXJO",       # Australia (ASX 200)
             ".SS":  "000001.SS",   # Shanghai (SSE Composite)
+            ".BJ":  "000001.SS",   # Beijing (Yahoo has no BSE index; SSE Composite)
             ".SZ":  "399001.SZ",   # Shenzhen (SZSE Component)
             ".SA":  "^BVSP",       # B3 Brazil (Ibovespa)
             "":     "SPY",         # default for US-listed tickers (no suffix)

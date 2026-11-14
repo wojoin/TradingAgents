@@ -22,7 +22,12 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from tradingagents.dataflows.errors import VendorNotConfiguredError
+from tradingagents.dataflows.errors import (
+    VendorError,
+    VendorNotConfiguredError,
+    VendorUnavailableError,
+)
+from tradingagents.dataflows.symbols import exchange_prefix
 from tradingagents.dataflows.vendors.akshare import settings
 
 log = logging.getLogger(__name__)
@@ -94,22 +99,6 @@ def to_local_dates(s: pd.Series) -> pd.Series:
     北京时间的日期 (tz-naive, 00:00)。带时区的值先换算到北京时间再取日期, 不会因 UTC 换算错到前一天。"""
     d = pd.to_datetime(s, errors="coerce", utc=True, format="mixed")
     return d.dt.tz_convert("Asia/Shanghai").dt.tz_localize(None).dt.normalize()
-
-
-def exchange_prefix(code: str) -> str | None:
-    """6 位代码 -> SH / SZ / BJ。
-    SH: 60 (主板)、68 (科创板/CDR)、90 (B股)
-    SZ: 00 (主板)、30 (创业板)、20 (B股)
-    BJ: 92 (2024 年起新代码段)、43 / 83 / 87 / 88 (老代码段)、4 / 8 开头的其他北交所代码
-    """
-    c = str(code).strip().zfill(6)[-6:]
-    if c.startswith(("60", "68", "90")):
-        return "SH"
-    if c.startswith(("00", "30", "20")):
-        return "SZ"
-    if c.startswith(("92", "43", "83", "87", "88")) or c[0] in "48":
-        return "BJ"
-    return None
 
 
 def to_symbol(code: str) -> str | None:
@@ -240,6 +229,50 @@ def cached(name: str, fn: Callable[[], pd.DataFrame], policy="daily", refresh: b
                            f"{type(err).__name__}")
         return pd.read_pickle(olds[-1])
     raise RuntimeError(f"{type(err).__name__}: {err}")
+
+
+# ---------------------------------------------------------------------------
+# 单只股票的数据 (供分析智能体按需读取)
+# ---------------------------------------------------------------------------
+# 盘中请求当天的数据时, 缓存超过这个秒数就重新拉取 (盘中行情一直在变)
+QUOTE_TTL_SECONDS = 900
+
+
+def symbol_cache(kind: str, symbol: str, fetch: Callable[[], pd.DataFrame], live: bool = False) -> pd.DataFrame:
+    """单只股票的下载结果缓存在 agent/<kind>/<symbol>.pkl, 当天 (北京时间) 有效。
+
+    live: 请求覆盖到今天; 盘中时缓存超过 QUOTE_TTL_SECONDS 就重新拉取。"""
+    path = root() / "agent" / kind / f"{symbol}.pkl"
+    now = now_cst()
+    if path.exists():
+        written = dt.datetime.fromtimestamp(path.stat().st_mtime, CST)
+        expired = live and is_intraday(now) and (now - written).total_seconds() > QUOTE_TTL_SECONDS
+        if written.date() == now.date() and not expired:
+            return pd.read_pickle(path)
+    df = fetch()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".pkl.tmp")
+    df.to_pickle(tmp)
+    os.replace(tmp, path)
+    return df
+
+
+def call(fn: Callable, what: str):
+    """调用 akshare; 网络 / 接口异常记为 VendorUnavailableError (说明的是数据源, 不是这只股票)。
+    分页接口的 tqdm 进度条会搅乱 CLI 的实时界面, 调用期间关闭。"""
+    previous = os.environ.get("TQDM_DISABLE")
+    os.environ["TQDM_DISABLE"] = "1"
+    try:
+        return fn()
+    except VendorError:
+        raise
+    except Exception as e:
+        raise VendorUnavailableError(f"AKShare {what} failed: {type(e).__name__}: {str(e)[:200]}") from e
+    finally:
+        if previous is None:
+            os.environ.pop("TQDM_DISABLE", None)
+        else:
+            os.environ["TQDM_DISABLE"] = previous
 
 
 # ---------------------------------------------------------------------------

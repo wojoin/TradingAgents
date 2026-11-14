@@ -171,7 +171,7 @@ def _prompt_selections(prefs, flags):
         console.print(
             create_question_box(
                 "Step 1: Ticker Symbol",
-                "Enter the ticker, with exchange suffix when needed (e.g. SPY, 0700.HK, BTC-USD)",
+                "Enter the ticker, with exchange suffix when needed (e.g. SPY, 600519, 0700.HK, BTC-USD)",
                 "SPY",
             )
         )

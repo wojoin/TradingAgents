@@ -6,6 +6,12 @@ from tradingagents.dataflows.errors import (
     VendorNotConfiguredError,
     VendorUnavailableError,
 )
+from tradingagents.dataflows.symbols import a_share_code
+from tradingagents.dataflows.vendors.akshare import (
+    fundamentals as akshare_fundamentals,
+    news as akshare_news,
+    prices as akshare_prices,
+)
 from tradingagents.dataflows.vendors.alpha_vantage import (
     get_balance_sheet as get_alpha_vantage_balance_sheet,
     get_cashflow as get_alpha_vantage_cashflow,
@@ -99,36 +105,43 @@ VENDOR_METHODS = {
     "get_stock_data": {
         "alpha_vantage": get_alpha_vantage_stock,
         "yfinance": get_YFin_data_online,
+        "akshare": akshare_prices.get_stock_data,
     },
     # technical_indicators
     "get_indicators": {
         "alpha_vantage": get_alpha_vantage_indicator,
         "yfinance": get_stock_stats_indicators_window,
+        "akshare": akshare_prices.get_indicators,
     },
     # fundamental_data
     "get_fundamentals": {
         "alpha_vantage": get_alpha_vantage_fundamentals,
         "yfinance": get_yfinance_fundamentals,
+        "akshare": akshare_fundamentals.get_fundamentals,
     },
     "get_balance_sheet": {
         "alpha_vantage": get_alpha_vantage_balance_sheet,
         "sec_edgar": get_sec_edgar_balance_sheet,
         "yfinance": get_yfinance_balance_sheet,
+        "akshare": akshare_fundamentals.get_balance_sheet,
     },
     "get_cashflow": {
         "alpha_vantage": get_alpha_vantage_cashflow,
         "sec_edgar": get_sec_edgar_cashflow,
         "yfinance": get_yfinance_cashflow,
+        "akshare": akshare_fundamentals.get_cashflow,
     },
     "get_income_statement": {
         "alpha_vantage": get_alpha_vantage_income_statement,
         "sec_edgar": get_sec_edgar_income_statement,
         "yfinance": get_yfinance_income_statement,
+        "akshare": akshare_fundamentals.get_income_statement,
     },
     # news_data
     "get_news": {
         "alpha_vantage": get_alpha_vantage_news,
         "yfinance": get_news_yfinance,
+        "akshare": akshare_news.get_news,
     },
     "get_global_news": {
         "yfinance": get_global_news_yfinance,
@@ -147,6 +160,23 @@ VENDOR_METHODS = {
         "polymarket": get_polymarket_prediction_markets,
     },
 }
+
+
+# Methods whose first argument is the instrument. Their vendor chain depends on
+# the market: a China A-share takes the ``ashare_vendors`` chain, and the
+# A-share-only vendor never serves another market.
+SYMBOL_METHODS = {
+    "get_stock_data", "get_indicators", "get_fundamentals", "get_balance_sheet",
+    "get_cashflow", "get_income_statement", "get_news", "get_insider_transactions",
+}
+A_SHARE_ONLY_VENDORS = {"akshare"}
+
+
+def _symbol_of(method: str, args: tuple, kwargs: dict) -> str | None:
+    if method not in SYMBOL_METHODS:
+        return None
+    symbol = args[0] if args else kwargs.get("symbol", kwargs.get("ticker"))
+    return symbol if isinstance(symbol, str) else None
 
 
 def get_category_for_method(method: str) -> str:
@@ -171,6 +201,17 @@ def get_vendor(category: str, method: str = None) -> str:
 
     # Fall back to category-level configuration
     return config.get("data_vendors", {}).get(category, "default")
+
+
+def get_vendor_for_symbol(category: str, method: str, symbol: str | None) -> str:
+    """The vendor chain for ``method`` on ``symbol``: the ``ashare_vendors`` entry
+    (tool-level, then category) for a China A-share, else ``get_vendor``."""
+    if symbol and a_share_code(symbol):
+        ashare = get_config().get("ashare_vendors") or {}
+        chain = ashare.get(method) or ashare.get(category)
+        if chain:
+            return chain
+    return get_vendor(category, method)
 
 
 def vendor_unavailable(method: str, error: Exception) -> str:
@@ -200,13 +241,18 @@ def no_data_available(error: NoMarketDataError) -> str:
 def route_to_vendor(method: str, *args, **kwargs):
     """Route method calls to appropriate vendor implementation with fallback support."""
     category = get_category_for_method(method)
-    vendor_config = get_vendor(category, method)
+    symbol = _symbol_of(method, args, kwargs)
+    vendor_config = get_vendor_for_symbol(category, method, symbol)
     primary_vendors = [v.strip() for v in vendor_config.split(',')]
 
     if method not in VENDOR_METHODS:
         raise ValueError(f"Method '{method}' not supported")
 
     all_available_vendors = list(VENDOR_METHODS[method].keys())
+    if symbol is not None and a_share_code(symbol):     # the A-share vendor leads its own market
+        all_available_vendors.sort(key=lambda v: v not in A_SHARE_ONLY_VENDORS)
+    elif symbol is not None:
+        all_available_vendors = [v for v in all_available_vendors if v not in A_SHARE_ONLY_VENDORS]
 
     # The configured vendor list IS the chain: we do NOT silently fall back to
     # vendors the user did not choose (#988/#289) — that returned data from an
@@ -215,7 +261,7 @@ def route_to_vendor(method: str, *args, **kwargs):
     # The "default" sentinel (no explicit config) uses all available vendors.
     explicit = [v for v in primary_vendors if v and v != "default"]
     if explicit:
-        vendor_chain = [v for v in explicit if v in VENDOR_METHODS[method]]
+        vendor_chain = [v for v in explicit if v in all_available_vendors]
         if not vendor_chain:
             raise ValueError(
                 f"Configured vendor(s) {explicit} not available for '{method}'. "

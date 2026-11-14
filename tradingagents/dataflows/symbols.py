@@ -69,7 +69,58 @@ _ALIASES = {
 
 # HKEX codes as Yahoo spells them: the number zero-padded to 4 digits (#957).
 _HK_CODE = re.compile(r"^(\d{1,5})\.HK$")
+
+# China A-share stocks, in the forms brokers and data sites write them:
+# ``600519``, ``600519.SH`` / ``.SS``, ``000001.SZ``, ``920001.BJ``, ``SH600519``.
+_A_SHARE_SUFFIXED = re.compile(r"^(\d{6})\.(SH|SS|SZ|BJ)$")
+_A_SHARE_PREFIXED = re.compile(r"^(SH|SZ|BJ)(\d{6})$")
+_A_SHARE_BARE = re.compile(r"^\d{6}$")
 _SHANGHAI_SH = re.compile(r"^(\d{6})\.SH$")
+# Exchange -> the suffix the pipeline carries (Yahoo's, so its fallback keeps working).
+_A_SHARE_SUFFIX = {"SH": "SS", "SZ": "SZ", "BJ": "BJ"}
+
+
+def exchange_prefix(code: str) -> str | None:
+    """The exchange that lists a 6-digit A-share stock code: SH, SZ or BJ, else None.
+
+    SH: 60 (main board), 68 (STAR / CDR), 90 (B shares)
+    SZ: 00 (main board), 30 (ChiNext), 20 (B shares)
+    BJ: 92 (codes issued from 2024), 43 / 83 / 87 / 88 and other 4/8 codes
+    Fund, bond and index codes (51..., 15..., 11..., 399...) return None.
+    """
+    c = str(code).strip().zfill(6)[-6:]
+    if c.startswith(("60", "68", "90")):
+        return "SH"
+    if c.startswith(("00", "30", "20")):
+        return "SZ"
+    if c.startswith(("92", "43", "83", "87", "88")) or c[0] in "48":
+        return "BJ"
+    return None
+
+
+def a_share_code(symbol: str) -> str | None:
+    """The 6-digit code when ``symbol`` names a China A-share stock, else None.
+
+    A suffix must agree with the code's exchange: ``000001.SS`` is Yahoo's SSE
+    Composite index, not the Shenzhen stock ``000001``, and stays a Yahoo symbol.
+    """
+    if not isinstance(symbol, str):
+        return None
+    s = symbol.strip().upper()
+    if m := _A_SHARE_SUFFIXED.match(s):
+        code, exchange = m.group(1), {"SS": "SH"}.get(m.group(2), m.group(2))
+        return code if exchange_prefix(code) == exchange else None
+    if m := _A_SHARE_PREFIXED.match(s):
+        code = m.group(2)
+        return code if exchange_prefix(code) == m.group(1) else None
+    if _A_SHARE_BARE.match(s):
+        return s if exchange_prefix(s) else None
+    return None
+
+
+def a_share_symbol(code: str) -> str:
+    """The canonical pipeline symbol for a 6-digit A-share code: ``600519.SS``, ``000001.SZ``, ``920001.BJ``."""
+    return f"{code}.{_A_SHARE_SUFFIX[exchange_prefix(code)]}"
 
 
 # Crypto quote currencies that all map to Yahoo's USD pair. Yahoo lists only
@@ -110,7 +161,9 @@ def normalize_symbol(raw: str) -> str:
       3. Forex rule: six letters that are two ISO currency codes -> ``PAIR=X``.
       4. HK rule: a numeric ``.HK`` code -> Yahoo's 4-digit padding
          (``09992.HK`` -> ``9992.HK``, ``700.HK`` -> ``0700.HK``).
-      5. Shanghai rule: ``600519.SH`` -> ``600519.SS``.
+      5. China A-share rule: a stock code in any common form -> ``<code>.SS``
+         (Shanghai), ``.SZ`` (Shenzhen) or ``.BJ`` (Beijing): ``600519`` and
+         ``600519.SH`` -> ``600519.SS``, ``SZ000001`` -> ``000001.SZ``.
       6. Otherwise the upper-cased symbol is returned unchanged (plain
          equities, ETFs, Yahoo-native symbols like ``GC=F`` or ``^GSPC``).
 
@@ -134,7 +187,9 @@ def normalize_symbol(raw: str) -> str:
         canonical = f"{s}=X"
     elif hk := _HK_CODE.match(s):
         canonical = f"{int(hk.group(1)):04d}.HK"
-    elif sh := _SHANGHAI_SH.match(s):
+    elif code := a_share_code(s):
+        canonical = a_share_symbol(code)
+    elif sh := _SHANGHAI_SH.match(s):       # Shanghai indices and funds: 000001.SH -> 000001.SS
         canonical = f"{sh.group(1)}.SS"
     else:
         canonical = s
