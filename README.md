@@ -235,6 +235,7 @@ With the `ashare` extra installed, an A-share stock is analysed from AKShare rat
 - fundamentals: the day's valuation multiples, the latest report published by the analysis date, and the Shenwan (申万) industry's valuation and percentile;
 - financial statements dated by their publication (公告日期), so a past run sees only what had been published; A-share reports are year to date;
 - Eastmoney company news (Chinese);
+- corporate events (`get_corporate_events`, for the fundamentals analyst): lock-up expiries (限售解禁) over the past and coming year, an upcoming one only once announced, and earnings preannouncements (业绩预告) and preliminary results (业绩快报) as announced by the run date;
 - insider trades: 董监高 increases and reductions from the exchange's disclosure, and major-shareholder (持股5%以上) trades from 同花顺 dated by announcement, with a transfer's buyers kept apart from the seller (AKShare only: Yahoo has none for A-shares);
 - sentiment from fund flows (main-force flow, margin, Stock Connect holdings, 龙虎榜), the market's limit-up pools and Eastmoney popularity, in place of StockTwits and Reddit;
 - China macro series for the news analyst (`get_macro_indicators` with `china_overview`, `china_cpi`, `china_pmi`, `china_m2`, `china_lpr`, `china_yields` and more), with no key; a past run reads a figure only from a conservative release day after its period;

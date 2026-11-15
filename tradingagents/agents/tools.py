@@ -240,6 +240,24 @@ def get_insider_transactions(
 
 
 @tool
+def get_corporate_events(
+    ticker: Annotated[str, InjectedState("company_of_interest")],
+    trade_date: Annotated[str, InjectedState("trade_date")] = "",
+) -> str:
+    """
+    Retrieve a China A-share's corporate events: restricted shares becoming
+    tradable (限售解禁, past year and the year ahead), earnings preannouncements
+    (业绩预告) and preliminary results (业绩快报) announced by the analysis date.
+    Returns:
+        str: A report of the events; other markets have none
+    """
+    if not a_share_code(ticker):
+        return ("Corporate events (lock-up expiries, earnings preannouncements and preliminary results) "
+                "are available for China A-shares only.")
+    return route_to_vendor("get_corporate_events", ticker, trade_date or None)
+
+
+@tool
 def get_macro_indicators(
     indicator: Annotated[
         str,

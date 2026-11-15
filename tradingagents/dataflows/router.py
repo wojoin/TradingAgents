@@ -9,6 +9,7 @@ from tradingagents.dataflows.errors import (
 from tradingagents.dataflows.symbols import a_share_code
 from tradingagents.dataflows.vendors.akshare import (
     china_news as akshare_china_news,
+    events as akshare_events,
     fundamentals as akshare_fundamentals,
     insiders as akshare_insiders,
     macro as akshare_macro,
@@ -70,7 +71,8 @@ TOOLS_CATEGORIES = {
             "get_fundamentals",
             "get_balance_sheet",
             "get_cashflow",
-            "get_income_statement"
+            "get_income_statement",
+            "get_corporate_events",
         ]
     },
     "news_data": {
@@ -154,6 +156,9 @@ VENDOR_METHODS = {
         "yfinance": get_global_news_yfinance,
         "alpha_vantage": get_alpha_vantage_global_news,
     },
+    "get_corporate_events": {
+        "akshare": akshare_events.get_corporate_events,
+    },
     "get_insider_transactions": {
         "alpha_vantage": get_alpha_vantage_insider_transactions,
         "yfinance": get_yfinance_insider_transactions,
@@ -177,10 +182,11 @@ VENDOR_METHODS = {
 SYMBOL_METHODS = {
     "get_stock_data", "get_indicators", "get_fundamentals", "get_balance_sheet",
     "get_cashflow", "get_income_statement", "get_news", "get_insider_transactions", "get_china_news",
+    "get_corporate_events",
 }
 A_SHARE_ONLY_VENDORS = {"akshare"}
 # Methods only a China source can serve, whatever the configured vendors.
-CHINA_ONLY_METHODS = {"get_china_news"}
+CHINA_ONLY_METHODS = {"get_china_news", "get_corporate_events"}
 
 
 def _symbol_of(method: str, args: tuple, kwargs: dict) -> str | None:
