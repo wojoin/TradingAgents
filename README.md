@@ -237,6 +237,8 @@ With the `ashare` extra installed, an A-share stock is analysed from AKShare rat
 - Eastmoney company news (Chinese);
 - insider trades: 董监高 increases and reductions from the exchange's disclosure, and major-shareholder (持股5%以上) trades from 同花顺 dated by announcement, with a transfer's buyers kept apart from the seller (AKShare only: Yahoo has none for A-shares);
 - sentiment from fund flows (main-force flow, margin, Stock Connect holdings, 龙虎榜), the market's limit-up pools and Eastmoney popularity, in place of StockTwits and Reddit;
+- China macro series for the news analyst (`get_macro_indicators` with `china_overview`, `china_cpi`, `china_pmi`, `china_m2`, `china_lpr`, `china_yields` and more), with no key; a past run reads a figure only from a conservative release day after its period;
+- China news about the stock and its Shenwan industry ahead of the global headlines, from 新闻联播 by date and the 财联社 and Eastmoney wires, paged back up to 7 days and archived under `.akshare_data/news` so later runs read what was observed;
 - company name and Shenwan industry from the local store, with no request.
 
 The market data store below supplies the name, industry and industry valuation; run `tradingagents-ashare sync` before analysing.

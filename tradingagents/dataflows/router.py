@@ -8,6 +8,7 @@ from tradingagents.dataflows.errors import (
 )
 from tradingagents.dataflows.symbols import a_share_code
 from tradingagents.dataflows.vendors.akshare import (
+    china_news as akshare_china_news,
     fundamentals as akshare_fundamentals,
     insiders as akshare_insiders,
     macro as akshare_macro,
@@ -77,6 +78,7 @@ TOOLS_CATEGORIES = {
         "tools": [
             "get_news",
             "get_global_news",
+            "get_china_news",
             "get_insider_transactions",
         ]
     },
@@ -145,6 +147,9 @@ VENDOR_METHODS = {
         "yfinance": get_news_yfinance,
         "akshare": akshare_news.get_news,
     },
+    "get_china_news": {
+        "akshare": akshare_china_news.get_china_news,
+    },
     "get_global_news": {
         "yfinance": get_global_news_yfinance,
         "alpha_vantage": get_alpha_vantage_global_news,
@@ -171,9 +176,11 @@ VENDOR_METHODS = {
 # A-share-only vendor never serves another market.
 SYMBOL_METHODS = {
     "get_stock_data", "get_indicators", "get_fundamentals", "get_balance_sheet",
-    "get_cashflow", "get_income_statement", "get_news", "get_insider_transactions",
+    "get_cashflow", "get_income_statement", "get_news", "get_insider_transactions", "get_china_news",
 }
 A_SHARE_ONLY_VENDORS = {"akshare"}
+# Methods only a China source can serve, whatever the configured vendors.
+CHINA_ONLY_METHODS = {"get_china_news"}
 
 
 def _symbol_of(method: str, args: tuple, kwargs: dict) -> str | None:
@@ -249,7 +256,7 @@ def route_to_vendor(method: str, *args, **kwargs):
     vendor_config = get_vendor_for_symbol(category, method, symbol)
     china_macro = method == "get_macro_indicators" and akshare_macro.is_china_indicator(
         args[0] if args else kwargs.get("indicator"))
-    if china_macro:     # china_* series come from AKShare, never FRED
+    if china_macro or method in CHINA_ONLY_METHODS:     # China-only data: AKShare, never FRED or Yahoo
         vendor_config = (get_config().get("ashare_vendors") or {}).get(method) or "akshare"
     primary_vendors = [v.strip() for v in vendor_config.split(',')]
 

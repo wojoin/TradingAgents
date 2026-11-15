@@ -13,6 +13,7 @@ from tradingagents.dataflows.date_window import as_of, as_of_window
 from tradingagents.dataflows.errors import NoMarketDataError, VendorUnavailableError
 from tradingagents.dataflows.markets import build_verified_market_snapshot
 from tradingagents.dataflows.router import no_data_available, route_to_vendor, vendor_unavailable
+from tradingagents.dataflows.symbols import a_share_code
 
 
 @tool
@@ -197,12 +198,15 @@ def get_global_news(
     look_back_days: Annotated[int | None, "Days to look back; omit to use the configured default"] = None,
     limit: Annotated[int | None, "Max articles to return; omit to use the configured default"] = None,
     trade_date: Annotated[str, InjectedState("trade_date")] = "",
+    ticker: Annotated[str, InjectedState("company_of_interest")] = "",
 ) -> str:
     """
     Retrieve global news data.
     Uses the configured news_data vendor. Defaults for look_back_days and
     limit come from DEFAULT_CONFIG (global_news_lookback_days,
     global_news_article_limit); pass explicit values to override.
+    For a China A-share, China news about the stock and its industry
+    (新闻联播, 财联社, Eastmoney wires) comes first, then the global headlines.
 
     Args:
         curr_date (str): Current date in yyyy-mm-dd format
@@ -212,7 +216,12 @@ def get_global_news(
     Returns:
         str: A formatted string containing global news data
     """
-    return route_to_vendor("get_global_news", as_of(curr_date, trade_date), look_back_days, limit)
+    date = as_of(curr_date, trade_date)
+    world = route_to_vendor("get_global_news", date, look_back_days, limit)
+    if not a_share_code(ticker):
+        return world
+    china = route_to_vendor("get_china_news", ticker, date, look_back_days)
+    return f"{china}\n\n# Global news\n\n{world}"
 
 
 @tool
