@@ -179,6 +179,9 @@ def build_default_config() -> dict:
             # 董监高 and major-shareholder trades. Yahoo has none for A-shares
             # and would report "no insider transactions", so it is no fallback.
             "get_insider_transactions": "akshare",
+            # China macro series (get_macro_indicators with a china_* name), in
+            # any run: NBS / PBoC / customs readings, LPR, RRR and bond yields.
+            "get_macro_indicators": "akshare",
         },
         # Tool-level configuration (takes precedence over category-level)
         "tool_vendors": {

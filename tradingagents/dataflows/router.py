@@ -10,6 +10,7 @@ from tradingagents.dataflows.symbols import a_share_code
 from tradingagents.dataflows.vendors.akshare import (
     fundamentals as akshare_fundamentals,
     insiders as akshare_insiders,
+    macro as akshare_macro,
     news as akshare_news,
     prices as akshare_prices,
 )
@@ -156,6 +157,7 @@ VENDOR_METHODS = {
     # macro_data
     "get_macro_indicators": {
         "fred": get_fred_macro_data,
+        "akshare": akshare_macro.get_macro_data,
     },
     # prediction_markets
     "get_prediction_markets": {
@@ -245,6 +247,10 @@ def route_to_vendor(method: str, *args, **kwargs):
     category = get_category_for_method(method)
     symbol = _symbol_of(method, args, kwargs)
     vendor_config = get_vendor_for_symbol(category, method, symbol)
+    china_macro = method == "get_macro_indicators" and akshare_macro.is_china_indicator(
+        args[0] if args else kwargs.get("indicator"))
+    if china_macro:     # china_* series come from AKShare, never FRED
+        vendor_config = (get_config().get("ashare_vendors") or {}).get(method) or "akshare"
     primary_vendors = [v.strip() for v in vendor_config.split(',')]
 
     if method not in VENDOR_METHODS:
@@ -253,7 +259,7 @@ def route_to_vendor(method: str, *args, **kwargs):
     all_available_vendors = list(VENDOR_METHODS[method].keys())
     if symbol is not None and a_share_code(symbol):     # the A-share vendor leads its own market
         all_available_vendors.sort(key=lambda v: v not in A_SHARE_ONLY_VENDORS)
-    elif symbol is not None:
+    elif symbol is not None or (method == "get_macro_indicators" and not china_macro):
         all_available_vendors = [v for v in all_available_vendors if v not in A_SHARE_ONLY_VENDORS]
 
     # The configured vendor list IS the chain: we do NOT silently fall back to
