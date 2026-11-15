@@ -1,20 +1,44 @@
 # TradingAgents Web
 
-A browser front end for TradingAgents: start an analysis from a stock code, follow
-every agent live, browse and sort saved reports, view the daily K-line, and download
-reports as Markdown, HTML or a ZIP of the whole report folder.
+A browser front end for TradingAgents, with a left-hand menu:
+
+- **个股** (stock): search by code or name (or click a row in 行情); the stock's latest
+  quote, industry and fund flow, its daily K-line since listing (the local store's
+  `snapshots/base` history, then the daily cross-sections after it; unadjusted, opening
+  on the last year, with 3M / 1Y / 3Y / all ranges), its saved reports, and a button to
+  analyse it.
+- **行情** (market): every A-share on a trading day from the local AKShare store
+  (`.akshare_data/snapshots`): code, name, change %, price, main-force net inflow,
+  Shenwan industry, turnover %, amount and volume; sortable, searchable, filterable by
+  industry, exportable as CSV. The flow is Eastmoney's 今日主力净流入 for the latest
+  session; when Eastmoney is rate-limited it is 同花顺's net flow, labelled as such.
+- **分析** (analysis): start an analysis from a stock code or name (a name resolves to
+  its code, and an ambiguous one lists the candidates), follow every agent live, and
+  the saved reports in a table below, each downloadable as Markdown, HTML or a ZIP.
 
 - `server/`: FastAPI. It runs the same trading graph as the CLI and saves the same
   report tree under `results_dir/reports` (by default `~/.tradingagents/logs/reports`).
 - `frontend/`: Vue 3 + Vite + TypeScript, with PrimeVue (tables), TradingView
   Lightweight Charts (K-line) and markdown-it (reports).
 
+PrimeVue is pinned to 4.5.5, `@primeuix/themes` to 2.0.3 and primeicons to 7.0.0, all
+MIT. From PrimeVue 5 and primeicons 8 the packages are commercial ("PrimeUI": a licence
+key is required, with a free community licence for eligible users) and show an
+"Invalid PrimeUI License" notice without one, so do not upgrade past them without
+deciding on that licence.
+
 ## Settings
 
-A web run needs only a stock code (`300308`, `600519.SH`, `AAPL` ...). Everything else
-comes from the CLI's last run, remembered in `~/.tradingagents/cli_prefs.json`: provider,
-models, research depth, output language and analysts. Run the CLI once to set them; the
-API keys come from `.env` as for the CLI. The analysis date is today.
+The analysis form offers what the CLI asks before a run: the stock (required; a code
+or a name), the analysis date, the analysts, the research depth (1, 3 or 5 debate
+rounds), the LLM provider (with its China-region variant, or the endpoint of a local or
+custom server), the deep- and quick-thinking models (listed, or any model id), the
+provider's reasoning setting (OpenAI, Anthropic, Google) and the report language.
+
+Defaults are the last run's answers in `~/.tradingagents/cli_prefs.json`, shared with
+the CLI; a run started on the page saves its answers there. API keys come from `.env`,
+as for the CLI: a provider without its key is shown but cannot be picked, and the
+server refuses it. ChatGPT-plan, Azure and Bedrock runs need the CLI.
 
 Runs execute one at a time; a second one waits in the queue. Runs started from the web
 are listed until the server restarts; their reports stay on disk.
@@ -63,13 +87,16 @@ Keep the server on `127.0.0.1`: it has no login, and every run spends model cred
 
 | Method | Path | |
 |---|---|---|
-| GET | `/api/settings` | the settings a run will use |
-| POST | `/api/runs` | `{"ticker": "300308"}`: queue an analysis for today |
+| GET | `/api/options` | every option a run can take, with the last run's answers as defaults |
+| GET | `/api/market?date=YYYY-MM-DD` | every A-share on the day (latest by default) |
+| GET | `/api/stocks/search?q=`, `/api/stocks/{code}` | find stocks by code or name; one stock's quote |
+| POST | `/api/runs` | `{"ticker": "300308" or "中际旭创", "options": {...}}`: queue an analysis; options as `/api/options` lists, any left out take the defaults |
 | GET | `/api/runs`, `/api/runs/{id}` | runs, and one run's agents and sections so far |
 | GET | `/api/runs/{id}/events` | the run's live events (Server-Sent Events; resumes from `Last-Event-ID`) |
 | GET | `/api/reports`, `/api/reports/{id}` | saved reports, and one report's sections |
 | GET | `/api/reports/{id}/download?format=md\|html\|zip` | download (`&inline=1` opens the HTML page) |
-| GET | `/api/kline/{ticker}?end=YYYY-MM-DD&days=250` | daily bars (AKShare for A-shares, else Yahoo) |
+| GET | `/api/kline/{ticker}?source=snapshot` | an A-share's whole daily history from the local store (unadjusted) |
+| GET | `/api/kline/{ticker}?end=YYYY-MM-DD&days=250` | the last adjusted daily bars (AKShare for A-shares, else Yahoo) |
 
 Interactive API docs: http://127.0.0.1:8765/api/docs.
 

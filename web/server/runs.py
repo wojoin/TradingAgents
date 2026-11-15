@@ -70,10 +70,15 @@ class Run:
     agents: dict[str, str] = field(default_factory=dict)
     sections: dict[str, str] = field(default_factory=dict)
     events: list[dict] = field(default_factory=list)
+    options: object | None = None    # web.server.settings.RunOptions
 
     def summary(self) -> dict:
-        return {k: getattr(self, k) for k in ("id", "ticker", "symbol", "trade_date", "status", "created",
-                                              "started", "finished", "report_id", "rating", "error")}
+        from dataclasses import asdict, is_dataclass
+
+        out = {k: getattr(self, k) for k in ("id", "ticker", "symbol", "trade_date", "status", "created",
+                                             "started", "finished", "report_id", "rating", "error")}
+        out["options"] = asdict(self.options) if is_dataclass(self.options) else None
+        return out
 
     def detail(self) -> dict:
         return {**self.summary(), "agents": dict(self.agents),
@@ -136,12 +141,12 @@ Runner = Callable[[Run, Callable[[str, dict], None]], tuple[Path, str]]
 
 
 def graph_runner(run: Run, emit: Callable[[str, dict], None]) -> tuple[Path, str]:
-    """Run the trading graph for ``run`` with the CLI's last settings and save its report."""
+    """Run the trading graph for ``run`` with its options and save its report."""
     from tradingagents.agents.rating import run_rating
     from tradingagents.graph.trading_graph import TradingAgentsGraph
-    from web.server.settings import run_config
+    from web.server.settings import run_config, validate
 
-    config, analysts = run_config()
+    config, analysts = run_config(run.options or validate({}))
     progress = Progress(run, emit, analysts)
     graph = TradingAgentsGraph(analysts, config=config, debug=False)
     state = graph.create_run_state(run.symbol, run.trade_date)
@@ -174,11 +179,14 @@ class RunManager:
         self.changed = threading.Condition(self.lock)
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="analysis")
 
-    def submit(self, ticker: str) -> Run:
+    def submit(self, ticker: str, options=None) -> Run:
+        """Queue a run of ``ticker``; ``options`` (RunOptions) sets its date, analysts, models ..."""
         raw = (ticker or "").strip()
         if not raw or len(raw) > 20 or not all(c.isalnum() or c in ".-^=" for c in raw):
             raise ValueError(f"not a ticker: {ticker!r}")
-        run = Run(id=uuid.uuid4().hex[:12], ticker=raw, symbol=normalize_symbol(raw), trade_date=self.today())
+        date = getattr(options, "date", None) or self.today()
+        run = Run(id=uuid.uuid4().hex[:12], ticker=raw, symbol=normalize_symbol(raw), trade_date=date,
+                  options=options)
         with self.lock:
             self.runs[run.id] = run
             self._emit(run, "status", {"status": "queued"})

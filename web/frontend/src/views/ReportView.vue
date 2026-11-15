@@ -45,7 +45,7 @@ watch(() => props.id, load, { immediate: true })
 
 <template>
   <div class="page">
-    <RouterLink to="/reports" class="back"><i class="pi pi-arrow-left" /> 返回报告列表</RouterLink>
+    <RouterLink to="/analysis" class="back"><i class="pi pi-arrow-left" /> 返回分析</RouterLink>
     <Message v-if="error" severity="error">报告加载失败：{{ error }}</Message>
     <template v-if="report">
       <div class="card head">

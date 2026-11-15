@@ -41,6 +41,7 @@ fi
 # ---- backend -----------------------------------------------------------------
 if running backend; then
   echo "• backend already running (pid $(cat "$RUN_DIR/backend.pid")) on port $API_PORT"
+  echo "  (it keeps the code it started with: after changing the code, run web/stop.sh first)"
 elif listening "$API_PORT"; then
   echo "✗ port $API_PORT is taken by another process:"; lsof -nP -iTCP:"$API_PORT" -sTCP:LISTEN
   echo "  Free it, or start on another port: TA_API_PORT=8766 web/start.sh"; exit 1
@@ -49,7 +50,7 @@ else
   nohup "$PY" -m uvicorn web.server.app:app --host 127.0.0.1 --port "$API_PORT" \
     >"$RUN_DIR/backend.log" 2>&1 &
   echo $! >"$RUN_DIR/backend.pid"
-  wait_for backend "http://127.0.0.1:$API_PORT/api/settings" "$(cat "$RUN_DIR/backend.pid")"
+  wait_for backend "http://127.0.0.1:$API_PORT/api/options" "$(cat "$RUN_DIR/backend.pid")"
   echo "✓ backend  http://127.0.0.1:$API_PORT  (pid $(cat "$RUN_DIR/backend.pid"), API docs /api/docs)"
 fi
 

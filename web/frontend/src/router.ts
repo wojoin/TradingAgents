@@ -1,11 +1,14 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
-// Each page loads on first visit, so the chart library ships only with the report page.
+// Each page loads on first visit, so the chart library ships only with the pages that draw one.
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: '/', name: 'analyze', component: () => import('./views/AnalyzeView.vue') },
-    { path: '/reports', name: 'reports', component: () => import('./views/ReportsView.vue') },
+    { path: '/', redirect: '/stock' },
+    { path: '/stock/:code?', name: 'stock', component: () => import('./views/StockView.vue'), props: true },
+    { path: '/market', name: 'market', component: () => import('./views/MarketView.vue') },
+    { path: '/analysis', name: 'analysis', component: () => import('./views/AnalysisView.vue') },
+    { path: '/reports', redirect: '/analysis' },
     { path: '/reports/:id', name: 'report', component: () => import('./views/ReportView.vue'), props: true },
   ],
 })

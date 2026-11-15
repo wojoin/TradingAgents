@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import Button from 'primevue/button'
-import InputText from 'primevue/inputtext'
 import Tag from 'primevue/tag'
 import Message from 'primevue/message'
 import Tabs from 'primevue/tabs'
@@ -10,15 +9,19 @@ import Tab from 'primevue/tab'
 import TabPanels from 'primevue/tabpanels'
 import TabPanel from 'primevue/tabpanel'
 import { useToast } from 'primevue/usetoast'
-import { api, RUN_STATUS, ratingSeverity, type AgentStatus, type RunSummary, type Settings } from '../api'
+import { useRoute } from 'vue-router'
+import { api, RUN_STATUS, ratingSeverity, type AgentStatus, type RunSummary } from '../api'
 import AgentBoard from '../components/AgentBoard.vue'
 import MarkdownView from '../components/MarkdownView.vue'
 import DownloadButtons from '../components/DownloadButtons.vue'
+import ReportsTable from '../components/ReportsTable.vue'
+import RunForm from '../components/RunForm.vue'
 
 const toast = useToast()
-const ticker = ref('')
-const starting = ref(false)
-const settings = ref<Settings | null>(null)
+const route = useRoute()
+const reportsTable = ref<InstanceType<typeof ReportsTable>>()
+// A stock page's "analyse" button arrives with ?ticker=, prefilling the form.
+const initialTicker = computed(() => (typeof route.query.ticker === 'string' ? route.query.ticker : ''))
 const runs = ref<RunSummary[]>([])
 const current = ref<RunSummary | null>(null)
 const agents = ref<Record<string, AgentStatus>>({})
@@ -34,21 +37,9 @@ async function loadRuns() {
   runs.value = await api.runs()
 }
 
-async function start() {
-  const code = ticker.value.trim()
-  if (!code) return
-  starting.value = true
-  try {
-    const run = await api.startRun(code)
-    toast.add({ severity: 'success', summary: '已开始分析', detail: `${run.symbol}，分析日 ${run.trade_date}`, life: 3000 })
-    ticker.value = ''
-    await loadRuns()
-    follow(run)
-  } catch (e) {
-    toast.add({ severity: 'error', summary: '无法开始分析', detail: e instanceof Error ? e.message : String(e), life: 6000 })
-  } finally {
-    starting.value = false
-  }
+async function started(run: RunSummary) {
+  await loadRuns()
+  follow(run)
 }
 
 function follow(run: RunSummary) {
@@ -66,6 +57,7 @@ function follow(run: RunSummary) {
     if (status === 'completed' || status === 'failed') {
       source?.close()
       loadRuns()
+      reportsTable.value?.reload()
     }
   })
   source.addEventListener('agent', (e) => {
@@ -93,7 +85,6 @@ function follow(run: RunSummary) {
 }
 
 onMounted(async () => {
-  settings.value = await api.settings().catch(() => null)
   await loadRuns()
   const active = runs.value.find((r) => r.status === 'running' || r.status === 'queued') || runs.value[0]
   if (active) follow(active)
@@ -104,15 +95,8 @@ onBeforeUnmount(() => source?.close())
 <template>
   <div class="page">
     <div class="card start">
-      <div class="row">
-        <InputText v-model="ticker" placeholder="股票代码，如 300308" class="ticker" @keyup.enter="start" />
-        <Button label="开始分析" icon="pi pi-play" :loading="starting" :disabled="!ticker.trim()" @click="start" />
-      </div>
-      <div v-if="settings" class="muted settings">
-        模型 {{ settings.llm_provider }} · {{ settings.deep_think_llm }} / {{ settings.quick_think_llm }} ·
-        辩论 {{ settings.research_rounds }} 轮 / 风控 {{ settings.risk_rounds }} 轮 · 输出 {{ settings.output_language }}
-        <span v-if="!settings.prefs_found">（未找到 CLI 的上次设置，使用默认配置）</span>
-      </div>
+      <div class="start-title">发起分析</div>
+      <RunForm :initial-ticker="initialTicker" @started="started" />
     </div>
 
     <div class="layout">
@@ -125,6 +109,9 @@ onBeforeUnmount(() => source?.close())
             <Tag :value="RUN_STATUS[r.status].label" :severity="RUN_STATUS[r.status].severity" />
           </div>
           <div class="muted small">{{ r.trade_date }} · {{ r.created.replace('T', ' ') }}</div>
+          <div v-if="r.options" class="muted small">
+            {{ r.options.llm_provider }} · {{ r.options.deep_think_llm }} · {{ r.options.research_depth }} 轮
+          </div>
         </button>
       </aside>
 
@@ -171,13 +158,17 @@ onBeforeUnmount(() => source?.close())
         </div>
       </section>
     </div>
+
+    <div class="card reports-list">
+      <ReportsTable ref="reportsTable" title="分析报告" :rows="10" />
+    </div>
   </div>
 </template>
 
 <style scoped>
 .start { margin-bottom: 16px; }
-.ticker { width: 260px; max-width: 100%; }
-.settings { margin-top: 10px; font-size: 13px; }
+.reports-list { margin-top: 16px; }
+.start-title { font-weight: 700; font-size: 16px; margin-bottom: 12px; }
 .layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 16px; align-items: start; }
 .side-title, .team-name { font-weight: 600; margin-bottom: 8px; }
 .run { display: block; width: 100%; text-align: left; background: none; border: 1px solid transparent; border-radius: 8px; padding: 8px; cursor: pointer; font: inherit; color: inherit; }

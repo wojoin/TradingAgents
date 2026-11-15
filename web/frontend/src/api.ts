@@ -15,16 +15,45 @@ export interface RunSummary {
   report_id: string | null
   rating: string | null
   error: string | null
+  options: RunOptions | null
 }
 
-export interface Settings {
-  llm_provider: string | null
-  deep_think_llm: string | null
-  quick_think_llm: string | null
-  output_language: string | null
-  research_rounds: number | null
-  risk_rounds: number | null
+export interface Choice<T = string> {
+  value: T
+  label: string
+  help?: string
+}
+
+export interface ProviderOption {
+  key: string
+  label: string
+  url: string | null
+  url_editable: boolean
+  key_env: string | null
+  key_set: boolean
+  models: { quick: Choice[]; deep: Choice[] }
+  effort: { config_key: string; choices: Choice[] } | null
+}
+
+export interface RunOptions {
+  date: string
   analysts: string[]
+  research_depth: number
+  llm_provider: string
+  quick_think_llm: string | null
+  deep_think_llm: string | null
+  backend_url: string | null
+  output_language: string
+  effort: string | null
+}
+
+export interface Options {
+  analysts: Choice[]
+  depths: Choice<number>[]
+  languages: Choice[]
+  providers: ProviderOption[]
+  defaults: RunOptions
+  today: string
   prefs_found: boolean
 }
 
@@ -56,6 +85,61 @@ export interface Bar {
   low: number
   close: number
   volume: number
+  amount?: number | null
+  pct_chg?: number | null
+  turnover?: number | null
+}
+
+export interface Kline {
+  symbol: string
+  name: string | null
+  source: 'snapshot' | 'vendor'
+  adjust: string
+  volume_unit: '手' | '股'
+  base_through: string | null
+  after_base: number
+  bars: Bar[]
+  note?: string | null
+}
+
+export interface FlowMeta {
+  source: 'eastmoney' | 'ths' | null
+  label: string
+  note: string
+}
+
+export interface MarketRow {
+  code: string
+  name: string
+  pct_chg: number | null
+  price: number | null
+  main_flow: number | null
+  industry: string | null
+  sub_industry: string | null
+  turnover: number | null
+  amount: number | null
+  volume: number | null
+  total_mv: number | null
+}
+
+export interface MarketTable {
+  date: string
+  dates: string[]
+  flow: FlowMeta
+  count: number
+  rows: MarketRow[]
+}
+
+export interface StockHit {
+  code: string
+  name: string
+  symbol: string
+}
+
+export interface Quote extends MarketRow {
+  date: string
+  flow: FlowMeta
+  symbol: string
 }
 
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
@@ -74,20 +158,25 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  settings: () => request<Settings>('/api/settings'),
-  startRun: (ticker: string) =>
+  options: () => request<Options>('/api/options'),
+  startRun: (ticker: string, options?: Partial<RunOptions>) =>
     request<RunSummary>('/api/runs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ticker }),
+      body: JSON.stringify({ ticker, options }),
     }),
   runs: () => request<RunSummary[]>('/api/runs'),
   reports: () => request<ReportMeta[]>('/api/reports'),
+  market: (date?: string) => request<MarketTable>(`/api/market${date ? `?date=${date}` : ''}`),
+  search: (q: string, limit = 10) =>
+    request<StockHit[]>(`/api/stocks/search?q=${encodeURIComponent(q)}&limit=${limit}`),
+  quote: (code: string) => request<Quote>(`/api/stocks/${encodeURIComponent(code)}`),
   report: (id: string) => request<Report>(`/api/reports/${encodeURIComponent(id)}`),
-  kline: (ticker: string, end?: string, days = 250) => {
-    const q = new URLSearchParams({ days: String(days) })
+  // source 'snapshot': an A-share's whole history from the local store (unadjusted).
+  kline: (ticker: string, end?: string, days = 250, source: 'vendor' | 'snapshot' = 'vendor') => {
+    const q = new URLSearchParams({ days: String(days), source })
     if (end) q.set('end', end)
-    return request<{ symbol: string; bars: Bar[] }>(`/api/kline/${encodeURIComponent(ticker)}?${q}`)
+    return request<Kline>(`/api/kline/${encodeURIComponent(ticker)}?${q}`)
   },
   download: (id: string, format: 'md' | 'html' | 'zip', inline = false) =>
     `/api/reports/${encodeURIComponent(id)}/download?format=${format}${inline ? '&inline=1' : ''}`,
@@ -128,4 +217,31 @@ export function ratingSeverity(rating: string | null | undefined): string {
 
 export function formatSize(bytes: number): string {
   return bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`
+}
+
+// Amounts in yuan as 亿 / 万, signed when asked.
+export function formatYuan(v: number | null | undefined, signed = false): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—'
+  const sign = signed && v > 0 ? '+' : ''
+  const a = Math.abs(v)
+  if (a >= 1e8) return `${sign}${(v / 1e8).toFixed(2)}亿`
+  if (a >= 1e4) return `${sign}${(v / 1e4).toFixed(0)}万`
+  return `${sign}${v.toFixed(0)}`
+}
+
+// Volume in lots (手) as 万手.
+export function formatLots(v: number | null | undefined): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—'
+  return v >= 1e4 ? `${(v / 1e4).toFixed(2)}万手` : `${v.toFixed(0)}手`
+}
+
+export function formatPct(v: number | null | undefined, signed = true): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—'
+  return `${signed && v > 0 ? '+' : ''}${v.toFixed(2)}%`
+}
+
+// A-share colours: red up, green down.
+export function upDownClass(v: number | null | undefined): string {
+  if (v === null || v === undefined || v === 0) return ''
+  return v > 0 ? 'up' : 'down'
 }
