@@ -10,11 +10,40 @@ from datetime import datetime
 from pathlib import Path
 
 from tradingagents.agents.rating import run_rating
+from tradingagents.dataflows.symbols import a_share_code
 
 
 def analyst_names(keys) -> list[str]:
     """The analysts as users select them: the sentiment analyst's key is "social"."""
     return ["sentiment" if key == "social" else key for key in keys or []]
+
+
+def vendors_for(ticker: str, settings: dict | None) -> dict[str, str]:
+    """The vendor chains that served ``ticker``'s run, keyed by category or tool.
+
+    Mirrors the router: a China A-share takes the ``ashare_vendors`` chain for a
+    category or tool it names, ahead of ``tool_vendors`` and ``data_vendors``; so a
+    user tool override in a category the A-share chain covers did not apply.
+    """
+    s = settings or {}
+    data = dict(s.get("data_vendors") or {})
+    tools = dict(s.get("tool_vendors") or {})
+    ashare = s.get("ashare_vendors") or {}
+    if ashare and ticker and a_share_code(ticker):
+        from tradingagents.dataflows.router import TOOLS_CATEGORIES, get_category_for_method
+
+        def category_of(method):
+            try:
+                return get_category_for_method(method)
+            except ValueError:
+                return None
+        tools = {k: v for k, v in tools.items() if k not in ashare and category_of(k) not in ashare}
+        for key, chain in ashare.items():
+            if key == "get_macro_indicators":   # only china_* series take it; the rest stay on macro_data
+                data["macro_data"] = f"{data.get('macro_data') or 'fred'}; china_* {chain}"
+                continue
+            (data if key in TOOLS_CATEGORIES else tools)[key] = chain
+    return {**data, **tools}
 
 
 def _header(ticker: str, final_state: dict, settings: dict | None) -> str:
@@ -38,7 +67,7 @@ def _header(ticker: str, final_state: dict, settings: dict | None) -> str:
         lines.append(f"- Analysts: {', '.join(analyst_names(s('analysts')))}; "
                      f"research debate rounds {s('max_debate_rounds', '?')}, "
                      f"risk debate rounds {s('max_risk_discuss_rounds', '?')}")
-        vendors = {**(s("data_vendors") or {}), **(s("tool_vendors") or {})}
+        vendors = vendors_for(ticker, settings)
         if vendors:
             lines.append("- Data vendors: " + ", ".join(f"{k} {v}" for k, v in vendors.items()))
     if final_state.get("memory_note"):

@@ -3,7 +3,8 @@
 Three blocks, each a text section the analyst reads:
 
   资金情绪 (fund sentiment)   ``get_fund_sentiment``
-    - 个股资金流: main-force and extra-large-order net inflow per day (Eastmoney)
+    - 个股资金流: main-force and extra-large-order net inflow per day (Eastmoney); when
+      Eastmoney is unavailable, 同花顺's latest-session net flow and 5/10/20-day totals
     - 融资融券: financing balance and short-sale volume per day (SSE / SZSE / BSE detail)
     - 北向资金: Stock Connect holdings per day (Eastmoney)
     - 龙虎榜: listings in the window, with institution / Connect / brokerage-seat net buying
@@ -31,6 +32,7 @@ from collections.abc import Callable
 
 import pandas as pd
 
+from tradingagents.dataflows.errors import VendorUnavailableError
 from tradingagents.dataflows.symbols import exchange_prefix, normalize_symbol
 from tradingagents.dataflows.vendors.akshare import store
 from tradingagents.dataflows.vendors.akshare.prices import require_code
@@ -149,7 +151,67 @@ def _section(title: str, source: str, build: Callable[[], str]) -> str:
 # ---------------------------------------------------------------------------
 # 资金情绪: 个股资金流
 # ---------------------------------------------------------------------------
+# 同花顺's whole-market fund flow, read when Eastmoney cannot serve: (AKShare symbol, cache key, label).
+THS_FLOWS = (("即时", "now", "当日"), ("5日排行", "5d", "5日"), ("10日排行", "10d", "10日"), ("20日排行", "20d", "20日"))
+
+
 def _fund_flow(code: str, end_date: str) -> str:
+    """Eastmoney's daily fund flow, or 同花顺's latest-session flow when Eastmoney cannot serve."""
+    try:
+        return _fund_flow_em(code, end_date)
+    except VendorUnavailableError as em_error:
+        try:
+            return _fund_flow_ths(code, end_date, _brief(em_error))
+        except Exception as ths_error:  # noqa: BLE001 — report both sources' failures
+            raise VendorUnavailableError(
+                f"Eastmoney {_brief(em_error)}; 同花顺 fallback: {_brief(ths_error)}") from ths_error
+
+
+def _brief(error: Exception) -> str:
+    """An error in one short clause: the underlying error's type and its first clause."""
+    cause = error.__cause__ or error
+    text = str(cause).split("，")[0].split("; ")[0][:90]
+    return f"{type(cause).__name__}: {text}" if cause is not error else text
+
+
+def _fund_flow_ths(code: str, end_date: str, em_reason: str) -> str:
+    """同花顺's flow for the latest session, and its 5/10/20-day totals; a run on that session only.
+
+    The tables carry no history, so a run dated before the latest closed session
+    cannot use them. Each whole-market table is cached for the session.
+    """
+    from tradingagents.dataflows.vendors.akshare.insiders import cn_number
+
+    session = store.last_closed_trade_date()
+    if pd.Timestamp(end_date).date() < session:
+        raise VendorUnavailableError(f"同花顺 serves only the latest session ({session}), after {end_date}")
+    intraday = store.is_intraday()
+    rows = []
+    for symbol, key, label in THS_FLOWS:
+        table = _dated(f"ths_fund_flow_{key}", f"{session:%Y%m%d}", not intraday,
+                       lambda symbol=symbol: store.ak().stock_fund_flow_individual(symbol=symbol), "同花顺 fund flow")
+        hit = table[table["股票代码"].astype(str).str.zfill(6) == code] if "股票代码" in table else table.iloc[0:0]
+        if hit.empty:
+            rows.append([label, "—", "—", "—", "—", "—", "—"])
+            continue
+        r = hit.iloc[0]
+        net = r.get("净额", r.get("资金流入净额"))
+        rows.append([label, str(r.get("涨跌幅", r.get("阶段涨跌幅", "—"))), str(r.get("换手率", r.get("连续换手率", "—"))),
+                     _yi(cn_number(net)), _yi(cn_number(r.get("流入资金")), signed=False),
+                     _yi(cn_number(r.get("流出资金")), signed=False), _yi(cn_number(r.get("成交额")), signed=False)])
+    if all(r[1] == "—" for r in rows):
+        raise VendorUnavailableError(f"{normalize_symbol(code)} is not in 同花顺's fund-flow tables")
+    return (f"Source: 同花顺 (THS), because Eastmoney's fund flow is unavailable ({em_reason}). "
+            f"Session {session}{' (intraday, not final)' if intraday else ''}; the multi-day rows are totals "
+            "ending that session.\n\n"
+            + _table(["区间", "涨跌幅", "换手率", "资金净流入", "流入资金", "流出资金", "成交额"], rows)
+            + "\n- 同花顺 nets every trade by its active buy / sell direction. It has no main-force or "
+              "order-size split, so its figures are not Eastmoney's 主力净流入 and the two must not be "
+              "compared; read its sign and how it changes across the periods.\n"
+              "- No day-by-day history: this is the latest session's view only.\n")
+
+
+def _fund_flow_em(code: str, end_date: str) -> str:
     market = exchange_prefix(code).lower()
     raw = _per_stock("fund_flow", code,
                      lambda: store.ak().stock_individual_fund_flow(stock=code, market=market),
@@ -334,7 +396,8 @@ def get_fund_sentiment(ticker: str, trade_date: str) -> str:
     """资金情绪 block: fund flow, margin, northbound holdings and 龙虎榜 up to ``trade_date``."""
     code = require_code(ticker)
     return (f"## 资金情绪 (fund sentiment) — {normalize_symbol(ticker)}, as of {trade_date}\n\n"
-            + _section("个股资金流 (Eastmoney, main-force / extra-large-order net inflow)", "Eastmoney fund flow",
+            + _section("个股资金流 (Eastmoney main-force / order-size net inflow; 同花顺 when Eastmoney is unavailable)",
+                       "fund flow",
                        lambda: _fund_flow(code, trade_date))
             + _section("融资融券 (exchange margin detail)", "margin detail", lambda: _margin(code, trade_date))
             + _section("北向资金 (Stock Connect holdings)", "northbound holdings",

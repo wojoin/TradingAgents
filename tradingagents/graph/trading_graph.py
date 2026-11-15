@@ -272,6 +272,8 @@ class TradingAgentsGraph:
             "output_language": cfg.get("output_language"),
             "data_vendors": dict(cfg.get("data_vendors") or {}),
             "tool_vendors": dict(cfg.get("tool_vendors") or {}),
+            # The chains a China A-share takes instead (router.get_vendor_for_symbol).
+            "ashare_vendors": dict(cfg.get("ashare_vendors") or {}),
         }
 
     def save_reports(self, final_state, ticker, save_path=None, html=True) -> Path:

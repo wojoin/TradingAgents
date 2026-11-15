@@ -279,7 +279,7 @@ def _build_ashare_system_message(
 
 ## How to read A-share sentiment (best practices)
 
-1. **Fund flow: persistence over single days.** One day of 主力净流入 means little; read the 5/10/20-day sums, the inflow-day count and the streak, and size them by 净占比 (share of turnover). 主力 inflow with 小单 outflow reads as larger money accumulating from retail; 主力 outflow with 小单 inflow reads as distribution to retail (散户接盘). The buckets are Eastmoney's tick-size estimate, not account identities, so treat them as indicative.
+1. **Fund flow: persistence over single days.** One day of 主力净流入 means little; read the 5/10/20-day sums, the inflow-day count and the streak, and size them by 净占比 (share of turnover). 主力 inflow with 小单 outflow reads as larger money accumulating from retail; 主力 outflow with 小单 inflow reads as distribution to retail (散户接盘). The buckets are Eastmoney's tick-size estimate, not account identities, so treat them as indicative. When the block says the flow comes from 同花顺 instead, it nets every trade by buy / sell direction with no main-force or order-size split: read its sign and how it changes from 当日 to 20日, never as 主力净流入.
 
 2. **Margin: leveraged conviction.** A rising 融资余额 means leveraged longs are adding; rising 融资余额 into a falling price is trapped leverage and a forced-selling risk; a falling balance into strength means leverage is taking profit. Rising 融券余量 is growing short interest. Margin runs through the trading day before {end_date}. A stock outside the 两融标的 list simply has no margin signal.
 

@@ -268,3 +268,28 @@ def test_identity_comes_from_the_local_shenwan_tables(fin, monkeypatch):
     monkeypatch.setattr(markets, "yahoo_company_profile", lambda t: pytest.fail("asked Yahoo"))
     assert markets.get_company_profile("600519.SS") == {
         "longName": "贵州茅台", "exchange": "Shanghai Stock Exchange", "quoteType": "EQUITY", "sector": "食品饮料"}
+
+
+# ---------------------------------------------------------------------------
+# The saved report names the vendors that served the run
+# ---------------------------------------------------------------------------
+def test_an_a_share_report_names_the_ashare_vendors():
+    from tradingagents.default_config import DEFAULT_CONFIG
+    from tradingagents.report_html import render_report
+    from tradingagents.reporting import _header, vendors_for
+
+    settings = {"data_vendors": DEFAULT_CONFIG["data_vendors"], "ashare_vendors": DEFAULT_CONFIG["ashare_vendors"],
+                "tool_vendors": {"get_news": "alpha_vantage", "get_global_news": "alpha_vantage"}}
+    a = vendors_for("300308.SZ", settings)
+    assert a["core_stock_apis"] == "akshare,yfinance" and a["news_data"] == "akshare,yfinance"
+    assert a["get_insider_transactions"] == "akshare"
+    assert a["macro_data"] == "fred; china_* akshare", "FRED still serves the non-China series"
+    assert "get_news" not in a and "get_global_news" not in a, "the A-share news chain overrides these"
+    us = vendors_for("NVDA", settings)
+    assert us["core_stock_apis"] == "yfinance" and us["get_news"] == "alpha_vantage"
+    header = _header("300308.SZ", {"trade_date": "2026-11-15"}, settings)
+    assert "core_stock_apis akshare,yfinance" in header and "core_stock_apis yfinance," not in header
+    page = render_report("300308.SZ", {"trade_date": "2026-11-15"}, settings, [])
+    assert "akshare" in page
+    no_ashare = vendors_for("300308.SZ", {"data_vendors": {"core_stock_apis": "yfinance"}})
+    assert no_ashare == {"core_stock_apis": "yfinance"}, "an old log without ashare_vendors is shown as recorded"

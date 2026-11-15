@@ -138,7 +138,8 @@ def test_fund_block_survives_a_source_outage(ak):
     ak.stock_hsgt_individual_em = _boom
     ak.stock_lhb_stock_detail_date_em = lambda symbol: pd.DataFrame({"交易日": []})
     text = sentiment.get_fund_sentiment("600519.SS", "2026-11-13")
-    assert "### 个股资金流" in text and "<Eastmoney fund flow unavailable" in text
+    assert "### 个股资金流" in text and "<fund flow unavailable: VendorUnavailableError: Eastmoney" in text
+    assert "同花顺 fallback" in text
     assert "| 2026-11-12 |" in text, "margin still served"
     assert "<northbound holdings unavailable" in text
 
@@ -301,3 +302,32 @@ def test_an_a_share_run_asks_for_the_block_scored_report(monkeypatch):
     assert "exactly one entry per block" in str(prompts[AShareSentimentReport])
     us = node({"company_of_interest": "NVDA", "trade_date": "2026-11-13", "messages": []})["sentiment_report"]
     assert "Sentiment by block" not in us and us.startswith("**Overall Sentiment:** **Neutral**")
+
+
+def ths_table(symbol):
+    if symbol == "即时":
+        return pd.DataFrame({"序号": [1], "股票代码": ["300308"], "股票简称": ["中际旭创"], "最新价": [465.0],
+                             "涨跌幅": ["-8.63%"], "换手率": ["4.66%"], "流入资金": ["121.58亿"],
+                             "流出资金": ["126.92亿"], "净额": ["-5.33亿"], "成交额": ["249.87亿"]})
+    return pd.DataFrame({"序号": [1], "股票代码": ["300308"], "股票简称": ["中际旭创"], "最新价": [465.0],
+                         "阶段涨跌幅": ["3.79%"], "连续换手率": ["23.57%"], "资金流入净额": ["24.83亿"]})
+
+
+def test_ths_serves_the_latest_session_when_eastmoney_cannot(ak):
+    calls = []
+    ak.stock_individual_fund_flow = _boom
+    ak.stock_fund_flow_individual = lambda symbol: calls.append(symbol) or ths_table(symbol)
+    text = sentiment._fund_flow("300308", TODAY)                   # Saturday: the latest session is 11-13
+    assert "Source: 同花顺 (THS)" in text and "ConnectionError: down" in text and "Session 2026-11-13" in text
+    assert "| 当日 | -8.63% | 4.66% | -5.33亿 | 121.58亿 | 126.92亿 | 249.87亿 |" in text
+    assert "| 20日 | 3.79% | 23.57% | +24.83亿 | — | — | — |" in text
+    assert "must not be compared" in text
+    sentiment._fund_flow("300308", TODAY)
+    assert calls == ["即时", "5日排行", "10日排行", "20日排行"], "the session's tables are cached"
+
+
+def test_ths_cannot_serve_a_past_session(ak):
+    ak.stock_individual_fund_flow = _boom
+    ak.stock_fund_flow_individual = lambda symbol: pytest.fail("no history to read")
+    text = sentiment._section("x", "fund flow", lambda: sentiment._fund_flow("300308", "2026-11-10"))
+    assert "Eastmoney ConnectionError: down" in text and "同花顺 fallback: 同花顺 serves only the latest session" in text
