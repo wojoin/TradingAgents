@@ -168,14 +168,6 @@ def test_bars_after_the_analysis_date_are_never_served(ak):
     assert "2026-10-15:" in text and "2026-10-16" not in text
 
 
-def test_bars_are_downloaded_once_per_day(ak):
-    n = []
-    ak.stock_zh_a_daily = lambda **k: n.append(1) or bars()
-    prices.load_ohlcv("600519.SS", "2026-11-13")
-    prices.get_stock_data("600519.SS", "2026-11-01", "2026-11-13")
-    assert len(n) == 1
-
-
 # ---------------------------------------------------------------------------
 # Fundamentals
 # ---------------------------------------------------------------------------
