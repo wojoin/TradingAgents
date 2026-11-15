@@ -1,11 +1,16 @@
-"""Sentiment analyst: one sentiment report from three sources.
+"""Sentiment analyst: one sentiment report from pre-fetched sources.
 
 The node fetches its sources before calling the model and puts them in the
 prompt, so the model reports on data it was given rather than inventing posts:
 
-  1. News headlines: Yahoo Finance
+  1. News headlines: the configured news vendor (Yahoo Finance by default)
   2. StockTwits messages: the cashtag stream, with Bullish/Bearish tags
   3. Reddit posts: r/wallstreetbets, r/stocks, r/investing, or crypto communities for a crypto pair
+
+A China A-share has almost no StockTwits or Reddit coverage, so it reads AKShare
+instead (``dataflows/vendors/akshare/sentiment``): 资金情绪 (fund flow, margin,
+northbound holdings, 龙虎榜), 市场情绪 (limit-up pools) and 人气 (Eastmoney
+popularity), alongside Eastmoney news.
 
 Each source is trimmed to the analysis window. With a TypeSafe key, the social
 posts are screened by Jev first (see post_screen). These feeds serve recent items
@@ -31,6 +36,8 @@ from tradingagents.agents.structured import (
     invoke_structured_or_freetext,
 )
 from tradingagents.agents.tools import get_news
+from tradingagents.dataflows.symbols import a_share_code
+from tradingagents.dataflows.vendors.akshare import sentiment as ashare_sentiment
 from tradingagents.dataflows.vendors.reddit import (
     CRYPTO_SUBREDDITS,
     DEFAULT_SUBREDDITS,
@@ -38,6 +45,14 @@ from tradingagents.dataflows.vendors.reddit import (
     subreddits_for,
 )
 from tradingagents.dataflows.vendors.stocktwits import fetch_stocktwits_messages
+
+
+def _ashare_block(fetch, *args) -> str:
+    """One A-share sentiment block, or a placeholder if it cannot be built at all."""
+    try:
+        return fetch(*args)
+    except Exception as e:  # noqa: BLE001 — e.g. akshare not installed
+        return f"<unavailable: {type(e).__name__}: {str(e)[:200]}>"
 
 
 def _seven_days_back(trade_date: str) -> str:
@@ -60,30 +75,43 @@ def create_sentiment_analyst(llm):
         start_date = _seven_days_back(end_date)
         instrument_context = get_instrument_context_from_state(state)
 
-        # Pre-fetch all three sources. Each fetcher degrades gracefully and
+        # Pre-fetch all sources. Each fetcher degrades gracefully and
         # returns a string (no exceptions surface from here), so the LLM
         # always sees something — either real data or a clear placeholder.
         news_block = get_news.func(ticker, start_date, end_date)
-        # Pass the analysis window so a historical run trims social posts to it
-        # instead of leaking today's chatter into a backtest (#1220).
-        screen = jev_screen(ticker)
-        stocktwits_block = fetch_stocktwits_messages(
-            ticker, limit=30, start_date=start_date, end_date=end_date, screen=screen
-        )
-        subreddits = subreddits_for(ticker)
-        reddit_block = fetch_reddit_posts(
-            ticker, subreddits, start_date=start_date, end_date=end_date, screen=screen
-        )
-
-        system_message = _build_system_message(
-            ticker=ticker,
-            start_date=start_date,
-            end_date=end_date,
-            news_block=news_block,
-            stocktwits_block=stocktwits_block,
-            reddit_block=reddit_block,
-            subreddits=subreddits,
-        )
+        if a_share_code(ticker):
+            # StockTwits and Reddit carry next to nothing on A-shares; the
+            # A-share read is fund flows, market-wide limit-up mood and
+            # Eastmoney attention instead.
+            system_message = _build_ashare_system_message(
+                ticker=ticker,
+                start_date=start_date,
+                end_date=end_date,
+                news_block=news_block,
+                fund_block=_ashare_block(ashare_sentiment.get_fund_sentiment, ticker, end_date),
+                market_block=_ashare_block(ashare_sentiment.get_market_sentiment, end_date, ticker),
+                popularity_block=_ashare_block(ashare_sentiment.get_popularity, ticker, end_date),
+            )
+        else:
+            # Pass the analysis window so a historical run trims social posts to it
+            # instead of leaking today's chatter into a backtest (#1220).
+            screen = jev_screen(ticker)
+            stocktwits_block = fetch_stocktwits_messages(
+                ticker, limit=30, start_date=start_date, end_date=end_date, screen=screen
+            )
+            subreddits = subreddits_for(ticker)
+            reddit_block = fetch_reddit_posts(
+                ticker, subreddits, start_date=start_date, end_date=end_date, screen=screen
+            )
+            system_message = _build_system_message(
+                ticker=ticker,
+                start_date=start_date,
+                end_date=end_date,
+                news_block=news_block,
+                stocktwits_block=stocktwits_block,
+                reddit_block=reddit_block,
+                subreddits=subreddits,
+            )
 
         prompt = ChatPromptTemplate.from_messages(
             [
@@ -195,5 +223,80 @@ Fill the following fields:
 - **overall_score**: A number from 0 (maximally bearish) to 10 (maximally bullish); 5 is neutral. Keep it consistent with overall_band.
 - **confidence**: low / medium / high, based on data quality and sample size.
 - **narrative**: Full source-by-source breakdown, divergences, dominant narrative themes, catalysts and risks, and a markdown summary table of key sentiment signals (direction, source, supporting evidence).
+
+{get_language_instruction()}"""
+
+
+def _build_ashare_system_message(
+    *,
+    ticker: str,
+    start_date: str,
+    end_date: str,
+    news_block: str,
+    fund_block: str,
+    market_block: str,
+    popularity_block: str,
+) -> str:
+    """The system message for a China A-share: fund, market and attention blocks plus news."""
+    return f"""You are a China A-share market sentiment analyst. Your task is to produce a sentiment report for {ticker} as of {end_date}, drawing on four blocks of data already collected for you from AKShare (Eastmoney and the exchanges). The data is in Chinese; amounts are in 亿元 (100 million yuan) unless stated.
+
+## Data blocks (pre-fetched, in this prompt)
+
+### Block 1 — 资金情绪 (fund sentiment): who is putting money in or taking it out
+个股资金流 (main-force / extra-large / small-order net inflow), 融资融券 (margin financing balance and short-sale volume), 北向资金 (Stock Connect holdings) and 龙虎榜 (exchange-disclosed top seats on abnormal-move days).
+
+<start_of_fund_sentiment>
+{fund_block}
+<end_of_fund_sentiment>
+
+### Block 2 — 市场情绪 (market sentiment): the whole market's speculative temperature
+涨停 / 炸板 / 跌停 counts, 炸板率, 最高连板 (consecutive-limit-up height), 连板梯队, and 昨日涨停今日平均涨幅 (limit-up premium), plus whether {ticker} itself sat in those pools.
+
+<start_of_market_sentiment>
+{market_block}
+<end_of_market_sentiment>
+
+### Block 3 — 人气 (retail attention): Eastmoney popularity rank and 千股千评
+
+<start_of_popularity>
+{popularity_block}
+<end_of_popularity>
+
+### Block 4 — News headlines (Eastmoney), {start_date} to {end_date}
+
+<start_of_news>
+{news_block}
+<end_of_news>
+
+## How to read A-share sentiment (best practices)
+
+1. **Fund flow: persistence over single days.** One day of 主力净流入 means little; read the 5/10/20-day sums, the inflow-day count and the streak, and size them by 净占比 (share of turnover). 主力 inflow with 小单 outflow reads as larger money accumulating from retail; 主力 outflow with 小单 inflow reads as distribution to retail (散户接盘). The buckets are Eastmoney's tick-size estimate, not account identities, so treat them as indicative.
+
+2. **Margin: leveraged conviction.** A rising 融资余额 means leveraged longs are adding; rising 融资余额 into a falling price is trapped leverage and a forced-selling risk; a falling balance into strength means leverage is taking profit. Rising 融券余量 is growing short interest. Margin runs through the trading day before {end_date}. A stock outside the 两融标的 list simply has no margin signal.
+
+3. **Northbound: report only what is observed.** If the block says daily holdings stopped being published, say northbound positioning is unobserved; do not carry the last known figure forward as current.
+
+4. **龙虎榜: who traded the abnormal move.** No listing is normal, not a signal. On a listing, 机构专用 net buying is the steadier money; 营业部 seats are usually short-term speculative money (游资), whose buying often reverses within days; 北向专用席位 is Stock Connect flow.
+
+5. **Market sentiment is the backdrop, not the stock.** Many limit-ups, a low 炸板率 (under ~20%), a rising 连板 height and a positive limit-up premium mark a hot, risk-on tape that lifts speculative and small-cap names; a 炸板率 above ~40%, a shrinking height, many 跌停 and a negative premium mark money-losing, risk-off conditions. Weigh it by how speculative {ticker} is: it matters far more for a small-cap theme stock than for a large-cap blue chip. Read the trend across days, not one day.
+
+6. **Attention: rising popularity is double-edged.** A sharply improving 人气排名 (a falling number) with a rising 新晋粉丝 share is fresh retail attention; together with 主力 outflow it is a warning of retail chasing, together with 主力 inflow it supports momentum. 千股千评 indices are Eastmoney's composites; read their direction.
+
+7. **Look for cross-block divergences.** Fund flow against attention, the stock against the market's mood, news framing against money flow: the mismatch is itself the signal. Name the dominant narrative that recurs across blocks.
+
+8. **Distinguish event from opinion.** A news headline or a 龙虎榜 listing is an event; a popularity rank or a composite score is a crowd read. Weigh them differently.
+
+9. **Be honest about data limits.** Any "<... unavailable ...>" placeholder or unobserved day weakens the read; say which, and lower `confidence`. Never treat an unobserved day as an absence.
+
+10. **Past sentiment is not predictive.** Frame conclusions as signal for the trader to weigh alongside fundamentals and technicals, not as a price call.
+
+## Output fields
+
+Fill the following fields:
+
+- **overall_band**: Exactly one of Bullish / Mildly Bullish / Neutral / Mixed / Mildly Bearish / Bearish. Use Mixed when blocks point in clearly different directions; Neutral only when all blocks are genuinely silent.
+- **overall_score**: A number from 0 (maximally bearish) to 10 (maximally bullish); 5 is neutral. Keep it consistent with overall_band.
+- **confidence**: low / medium / high, based on data coverage and quality.
+- **narrative**: Organized in these sections: 资金情绪 (fund flow, margin, northbound, 龙虎榜), 市场情绪, 人气, 新闻; then cross-block divergences, the dominant narrative, catalysts and risks, and a markdown summary table of key sentiment signals (direction, block, supporting evidence).
 
 {get_language_instruction()}"""
