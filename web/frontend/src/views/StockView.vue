@@ -8,6 +8,7 @@ import { useToast } from 'primevue/usetoast'
 import { api, formatLots, formatPct, formatYuan, upDownClass, type Quote } from '../api'
 import KlineChart from '../components/KlineChart.vue'
 import StockPicker from '../components/StockPicker.vue'
+import WatchStar from '../components/WatchStar.vue'
 
 // One stock: its latest quote, daily K-line and saved reports, and a button to analyse it.
 const props = defineProps<{ code?: string }>()
@@ -56,7 +57,10 @@ watch(() => props.code, load, { immediate: true })
           </template>
           <StockPicker placeholder="搜索股票：代码或名称" @select="pick" @submit="pick" />
         </div>
-        <Button v-if="code" label="分析这只股票" icon="pi pi-play" size="small" @click="analyse" />
+        <div v-if="code" class="row">
+          <WatchStar :code="code" labelled />
+          <Button label="分析这只股票" icon="pi pi-play" size="small" @click="analyse" />
+        </div>
       </div>
       <div v-if="code && quote" class="stats">
         <span>最新价 <b :class="['num', upDownClass(quote.pct_chg)]">{{ quote.price?.toFixed(2) }}</b></span>

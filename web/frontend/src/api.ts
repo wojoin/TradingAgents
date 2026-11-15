@@ -111,23 +111,82 @@ export interface FlowMeta {
 export interface MarketRow {
   code: string
   name: string
+  exchange?: 'SH' | 'SZ' | 'BJ' | null
   pct_chg: number | null
   price: number | null
   main_flow: number | null
+  open_pct: number | null
+  high: number | null
+  low: number | null
+  amount: number | null
+  volume: number | null
+  pct_5d: number | null
+  amplitude: number | null
   industry: string | null
   sub_industry: string | null
   turnover: number | null
-  amount: number | null
-  volume: number | null
+  pe_ttm: number | null
+  eps_ttm: number | null
   total_mv: number | null
+  total_shares: number | null
+  float_mv: number | null
+  float_shares: number | null
+}
+
+export interface MarketCalendar {
+  min: string | null
+  max: string | null
+  latest: string | null
+  holidays: string[]
 }
 
 export interface MarketTable {
   date: string
   dates: string[]
   flow: FlowMeta
+  ttm: string
+  breadth: { total: number; up: number; down: number; flat: number }
+  note: string | null
   count: number
   rows: MarketRow[]
+}
+
+export interface WatchRow extends Omit<Partial<MarketRow>, "code" | "name"> {
+  code: string
+  name: string | null
+  missing: boolean
+  open_pct?: number | null
+  high?: number | null
+  low?: number | null
+  pct_5d?: number | null
+  amplitude?: number | null
+  pe_ttm?: number | null
+  eps_ttm?: number | null
+  total_shares?: number | null
+  float_mv?: number | null
+  float_shares?: number | null
+}
+
+export interface WatchGroup {
+  id: string
+  name: string
+  color: string
+  codes: string[]
+}
+
+export interface StockNote {
+  text: string
+  updated: string
+}
+
+export interface Watchlist {
+  groups: WatchGroup[]
+  notes: Record<string, StockNote>
+  max_groups: number
+  date?: string
+  flow?: FlowMeta
+  ttm?: string
+  rows?: Record<string, WatchRow>
 }
 
 export interface StockHit {
@@ -168,9 +227,35 @@ export const api = {
   runs: () => request<RunSummary[]>('/api/runs'),
   reports: () => request<ReportMeta[]>('/api/reports'),
   market: (date?: string) => request<MarketTable>(`/api/market${date ? `?date=${date}` : ''}`),
+  marketCalendar: () => request<MarketCalendar>('/api/market/calendar'),
+  indexMembers: (index: string) =>
+    request<{ index: string; name: string; as_of: string | null; codes: string[] }>(`/api/market/index/${index}/members`),
   search: (q: string, limit = 10) =>
     request<StockHit[]>(`/api/stocks/search?q=${encodeURIComponent(q)}&limit=${limit}`),
   quote: (code: string) => request<Quote>(`/api/stocks/${encodeURIComponent(code)}`),
+  watchlist: (rows = true) => request<Watchlist>(`/api/watchlist${rows ? '' : '?rows=0'}`),
+  createGroup: (name: string, color: string) =>
+    request<WatchGroup>('/api/watchlist/groups', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, color }),
+    }),
+  updateGroup: (id: string, patch: { name?: string; color?: string }) =>
+    request<WatchGroup>(`/api/watchlist/groups/${encodeURIComponent(id)}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+    }),
+  deleteGroup: (id: string) =>
+    request<{ groups: WatchGroup[] }>(`/api/watchlist/groups/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  addToGroup: (id: string, code: string) =>
+    request<WatchGroup>(`/api/watchlist/groups/${encodeURIComponent(id)}/stocks/${encodeURIComponent(code)}`, { method: 'PUT' }),
+  moveInGroup: (id: string, code: string, to: 'top' | 'bottom') =>
+    request<WatchGroup>(`/api/watchlist/groups/${encodeURIComponent(id)}/stocks/${encodeURIComponent(code)}/move`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ to }),
+    }),
+  setNote: (code: string, text: string) =>
+    request<{ code: string; note: StockNote | null }>(`/api/watchlist/notes/${encodeURIComponent(code)}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
+    }),
+  removeFromGroup: (id: string, code: string) =>
+    request<WatchGroup>(`/api/watchlist/groups/${encodeURIComponent(id)}/stocks/${encodeURIComponent(code)}`, { method: 'DELETE' }),
   report: (id: string) => request<Report>(`/api/reports/${encodeURIComponent(id)}`),
   // source 'snapshot': an A-share's whole history from the local store (unadjusted).
   kline: (ticker: string, end?: string, days = 250, source: 'vendor' | 'snapshot' = 'vendor') => {
@@ -244,4 +329,12 @@ export function formatPct(v: number | null | undefined, signed = true): string {
 export function upDownClass(v: number | null | undefined): string {
   if (v === null || v === undefined || v === 0) return ''
   return v > 0 ? 'up' : 'down'
+}
+
+// Share counts as 亿 / 万 (股).
+export function formatShares(v: number | null | undefined): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return '—'
+  if (Math.abs(v) >= 1e8) return `${(v / 1e8).toFixed(2)}亿`
+  if (Math.abs(v) >= 1e4) return `${(v / 1e4).toFixed(0)}万`
+  return v.toFixed(0)
 }

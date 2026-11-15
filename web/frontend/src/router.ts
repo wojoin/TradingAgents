@@ -4,7 +4,8 @@ import { createRouter, createWebHistory } from 'vue-router'
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: '/', redirect: '/stock' },
+    { path: '/', redirect: '/watchlist' },
+    { path: '/watchlist', name: 'watchlist', component: () => import('./views/WatchlistView.vue') },
     { path: '/stock/:code?', name: 'stock', component: () => import('./views/StockView.vue'), props: true },
     { path: '/market', name: 'market', component: () => import('./views/MarketView.vue') },
     { path: '/analysis', name: 'analysis', component: () => import('./views/AnalysisView.vue') },

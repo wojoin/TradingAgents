@@ -253,10 +253,11 @@ def mkt(tmp_path, monkeypatch):
     market._TABLES.clear()
     monkeypatch.setattr(store, "last_closed_trade_date", lambda now=None: pd.Timestamp("2026-11-13").date())
     monkeypatch.setattr(store, "is_intraday", lambda now=None: False)
+    monkeypatch.setattr(store.time, "sleep", lambda s: None)      # no real waits between retries
     fake = types.SimpleNamespace()
     monkeypatch.setattr(store, "ak", lambda: fake)
     yield market, fake, data
-    for f in (market._read_xs, market.industries):
+    for f in (market._read_xs, market.industries, market._history_day, market.pct_5d, market._ttm):
         f.cache_clear()
     market._TABLES.clear()
     ak_settings.set_data_dir(None)
@@ -349,3 +350,255 @@ def test_a_stock_s_whole_history_from_the_local_store(mkt):
     assert [b["time"] for b in market.history("300308", "2026-11-12")["bars"]][-1] == "2026-11-12"
     with pytest.raises(FileNotFoundError):
         market.history("AAPL")
+
+
+# ---------------------------------------------------------------------------
+# Watchlist (自选)
+# ---------------------------------------------------------------------------
+def test_watchlist_groups_have_names_colours_and_stocks(tmp_path):
+    from web.server import watchlist
+
+    path = tmp_path / "watchlist.json"
+    assert [g["id"] for g in watchlist.load(path)] == ["default"], "the default group always exists"
+    tech = watchlist.create_group("科技", "#E5484D", path)
+    assert tech["color"] == "#e5484d" and tech["codes"] == []
+    liquor = watchlist.create_group("白酒", path=path)
+    watchlist.add_stock(tech["id"], "300308", path)
+    watchlist.add_stock(tech["id"], "600519.SH", path)
+    watchlist.add_stock(liquor["id"], "600519", path)
+    assert watchlist.add_stock(tech["id"], "300308", path)["codes"] == ["300308", "600519"], "no duplicates"
+    assert watchlist.all_codes(watchlist.load(path)) == ["300308", "600519"]
+    with pytest.raises(ValueError, match="只支持 A 股"):
+        watchlist.add_stock(tech["id"], "AAPL", path)
+    with pytest.raises(ValueError, match="已有名为"):
+        watchlist.create_group("科技", path=path)
+    with pytest.raises(ValueError, match="1 到 20"):
+        watchlist.create_group("", path=path)
+    with pytest.raises(ValueError, match="#RRGGBB"):
+        watchlist.update_group(tech["id"], color="red", path=path)
+    assert watchlist.update_group(tech["id"], name="通信", color="#16a34a", path=path)["name"] == "通信"
+    assert watchlist.remove_stock(tech["id"], "600519.SS", path)["codes"] == ["300308"]
+    assert [g["name"] for g in watchlist.delete_group(liquor["id"], path)] == ["默认", "通信"]
+    with pytest.raises(KeyError):
+        watchlist.add_stock("nope", "300308", path)
+
+
+def test_at_most_256_groups(tmp_path, monkeypatch):
+    from web.server import watchlist
+
+    path = tmp_path / "w.json"
+    monkeypatch.setattr(watchlist, "MAX_GROUPS", 3)
+    for i in range(2):                     # with the default group, three
+        watchlist.create_group(f"g{i}", path=path)
+    with pytest.raises(ValueError, match="最多只能有 3 个分组"):
+        watchlist.create_group("g2", path=path)
+    assert watchlist.MAX_GROUPS == 3 and len(watchlist.load(path)) == 3
+
+
+def test_a_watchlist_from_before_groups_becomes_the_default_group(tmp_path):
+    from web.server import watchlist
+
+    path = tmp_path / "w.json"
+    path.write_text(json.dumps({"codes": ["300308", "AAPL", "600519"]}))
+    [g] = watchlist.load(path)
+    assert g["name"] == "默认" and g["codes"] == ["300308", "600519"]
+    assert g["id"] == "default" and watchlist.load(path)[0]["id"] == "default", "the same id on every read"
+    assert watchlist.add_stock("default", "000001", path)["codes"] == ["300308", "600519", "000001"]
+    assert json.loads(path.read_text())["groups"][0]["id"] == "default", "written in the grouped form"
+    path.write_text("not json")
+    assert [g["id"] for g in watchlist.load(path)] == ["default"]
+
+
+def test_the_default_group_cannot_be_deleted_and_comes_first(tmp_path):
+    from web.server import watchlist
+
+    path = tmp_path / "w.json"
+    path.write_text(json.dumps({"groups": [{"id": "x1", "name": "默认", "codes": ["300308"]}]}))
+    groups = watchlist.load(path)
+    assert [g["id"] for g in groups] == ["default", "x1"] and groups[0]["name"] == "默认分组", "no clash of names"
+    with pytest.raises(ValueError, match="默认分组不可删除"):
+        watchlist.delete_group("default", path)
+    with pytest.raises(ValueError, match="默认分组不可修改"):
+        watchlist.update_group("default", name="我的自选", path=path)
+    with pytest.raises(ValueError, match="默认分组不可修改"):
+        watchlist.update_group("default", color="#16a34a", path=path)
+
+
+def test_stocks_move_to_the_top_or_bottom_of_their_group(tmp_path):
+    from web.server import watchlist
+
+    path = tmp_path / "w.json"
+    for c in ("300308", "600519", "000001"):
+        watchlist.add_stock("default", c, path)
+    assert watchlist.move_stock("default", "000001", "top", path)["codes"] == ["000001", "300308", "600519"]
+    assert watchlist.move_stock("default", "000001", "bottom", path)["codes"] == ["300308", "600519", "000001"]
+    with pytest.raises(ValueError, match="不在这个分组"):
+        watchlist.move_stock("default", "002142", "top", path)
+    with pytest.raises(ValueError, match="最前"):
+        watchlist.move_stock("default", "300308", "middle", path)
+
+
+def test_a_note_belongs_to_the_stock_in_every_group(tmp_path):
+    from web.server import watchlist
+
+    path = tmp_path / "w.json"
+    tech = watchlist.create_group("科技", path=path)
+    watchlist.add_stock("default", "300308", path)
+    watchlist.add_stock(tech["id"], "300308", path)
+    note = watchlist.set_note("300308.SZ", "  光模块龙头，关注 1.6T 放量  ", path)
+    assert note["text"] == "光模块龙头，关注 1.6T 放量" and note["updated"]
+    assert watchlist.notes(path) == {"300308": note}, "one note per stock, whatever the group"
+    watchlist.remove_stock("default", "300308", path)
+    assert "300308" in watchlist.notes(path), "removing from a group keeps the note"
+    assert watchlist.set_note("300308", "", path) is None and watchlist.notes(path) == {}
+    with pytest.raises(ValueError, match="最多 2000"):
+        watchlist.set_note("300308", "x" * 2001, path)
+    with pytest.raises(ValueError, match="只支持 A 股"):
+        watchlist.set_note("AAPL", "x", path)
+
+
+def test_watch_rows_add_the_day_s_range_and_ttm_earnings(mkt, tmp_path):
+    import pandas as pd
+
+    market, fake, data = mkt
+    fake.stock_individual_fund_flow_rank = lambda indicator: pd.DataFrame({"代码": ["300308"], "今日主力净流入-净额": [1e8]})
+    xs = data / "snapshots" / "20261113" / "cross_section.parquet"
+    df = pd.read_parquet(xs)
+    df["pre_close"], df["open"], df["high"], df["low"], df["amplitude"] = 500.0, 510.0, 525.0, 461.71, 12.4
+    df["close"], df["total_mv"], df["float_mv"] = 466.2, 466.2 * 1e9, 466.2 * 8e8
+    df.to_parquet(xs)
+    market._read_xs.cache_clear()
+    pd.DataFrame({"股票代码": ["300308"], "净利润-净利润": [22e9]}).to_pickle(data / "yjbb__P20260930.pkl")
+    pd.DataFrame({"股票代码": ["300308"], "净利润-净利润": [7e9]}).to_pickle(data / "yjbb_hist_20250930__P20250930.pkl")
+    asked = []
+    fake.stock_yjbb_em = lambda date: asked.append(date) or pd.DataFrame(
+        {"股票代码": ["300308"], "净资产收益率": [1.0], "净利润-同比增长": [1.0], "净利润-净利润": [10e9]})
+    market._ttm.cache_clear()
+    profit, label = market.ttm_profit()
+    assert asked == ["20251231"] and profit["300308"] == pytest.approx(25e9) and "2026 三季报" in label
+    w = market.watch_rows(["300308", "999999"])
+    r = w["rows"][0]
+    assert r["open_pct"] == pytest.approx(2.0) and r["high"] == 525.0 and r["amplitude"] == 12.4
+    assert r["total_shares"] == pytest.approx(1e9) and r["float_shares"] == pytest.approx(8e8)
+    assert r["eps_ttm"] == pytest.approx(25.0) and r["pe_ttm"] == pytest.approx(466.2 / 25)
+    assert r["pct_5d"] is None, "fewer than six sessions on record"
+    assert w["rows"][1] == {"code": "999999", "name": None, "missing": True}
+    market._ttm.cache_clear()
+
+
+def test_the_watchlist_endpoints(mkt, tmp_path):
+    import pandas as pd
+
+    _, fake, _ = mkt
+    fake.stock_individual_fund_flow_rank = lambda indicator: pd.DataFrame({"代码": ["300308"], "今日主力净流入-净额": [1.0]})
+    client = TestClient(create_app(RunManager(runner=lambda r, e: None), reports_root=tmp_path,
+                                   watchlist_path=tmp_path / "w.json"))
+    g = client.post("/api/watchlist/groups", json={"name": "科技", "color": "#e5484d"})
+    assert g.status_code == 201
+    gid = g.json()["id"]
+    assert client.post("/api/watchlist/groups", json={"name": "科技"}).status_code == 400
+    assert client.put(f"/api/watchlist/groups/{gid}/stocks/300308").json()["codes"] == ["300308"]
+    assert client.put(f"/api/watchlist/groups/{gid}/stocks/AAPL").status_code == 400
+    assert client.put("/api/watchlist/groups/nope/stocks/300308").status_code == 404
+    assert client.post(f"/api/watchlist/groups/{gid}/stocks/300308/move", json={"to": "top"}).status_code == 200
+    assert client.put("/api/watchlist/notes/300308", json={"text": "龙头"}).json()["note"]["text"] == "龙头"
+    assert client.delete("/api/watchlist/groups/default").status_code == 400
+    body = client.get("/api/watchlist").json()
+    assert body["groups"][1]["codes"] == ["300308"] and body["max_groups"] == 256
+    assert body["notes"]["300308"]["text"] == "龙头"
+    assert body["rows"]["300308"]["name"] == "中际旭创" and body["date"] == "2026-11-13"
+    assert client.patch(f"/api/watchlist/groups/{gid}", json={"color": "#16a34a"}).json()["color"] == "#16a34a"
+    assert client.delete(f"/api/watchlist/groups/{gid}/stocks/300308").json()["codes"] == []
+    assert [g["id"] for g in client.delete(f"/api/watchlist/groups/{gid}").json()["groups"]] == ["default"]
+    assert client.get("/api/watchlist?rows=0").json()["max_groups"] == 256
+
+
+def _history_store(data, monkeypatch, store, market):
+    """base history for 300308 (2026-11-03..06) beside the fixture's daily days 11-12 and 11-13."""
+    import json as _json
+
+    import pandas as pd
+
+    from tradingagents.dataflows.vendors.akshare import snapshots
+
+    base = data / "snapshots" / "base"
+    base.mkdir(parents=True)
+    days = ["2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06"]
+    hist = pd.DataFrame({c: [None] * 4 for c in snapshots.COLUMNS})
+    hist["trade_date"] = pd.to_datetime(days)
+    hist["code"], hist["exchange"], hist["name"], hist["source"] = "300308", "SZ", "中际旭创", "hist"
+    hist["pct_chg"] = [10.0, 10.0, 10.0, 1.0]
+    hist["open"] = hist["high"] = hist["low"] = hist["close"] = 100.0
+    hist["volume"], hist["turnover"] = 1000.0, 2.0
+    hist.to_parquet(base / "SZ300308.parquet")
+    (data / "snapshots" / "_meta.json").write_text(
+        _json.dumps({"layout": snapshots.LAYOUT, "base_through": "20261106"}))
+    snapshots._SRC_CACHE = None
+    # trading days: the four in base, then 11-12 and 11-13 (11-09..11 are not on this calendar)
+    monkeypatch.setattr(store, "_CAL", pd.DatetimeIndex(pd.to_datetime([*days, "2026-11-12", "2026-11-13"])))
+    for f in (market._read_xs, market._history_day, market.pct_5d):
+        f.cache_clear()
+
+
+def test_the_5_day_change_compounds_five_trading_days_across_base_and_daily(mkt, monkeypatch):
+    from tradingagents.dataflows.vendors.akshare import store
+
+    market, _, data = mkt
+    _history_store(data, monkeypatch, store, market)
+    five = market.pct_5d("2026-11-13")         # 11-04, 11-05, 11-06 from base; 11-12, 11-13 daily
+    assert five["300308"] == pytest.approx((1.1 * 1.1 * 1.01 * 1.01 * (1 - 0.08391) - 1) * 100)
+    assert five["600519"] == pytest.approx((1.0177 ** 2 - 1) * 100), "no row on a day: unchanged that day"
+    assert market.pct_5d("2026-11-06") is None, "fewer than five trading days on the calendar"
+
+
+def test_a_historical_day_comes_from_base(mkt, monkeypatch):
+    from tradingagents.dataflows.vendors.akshare import store
+
+    market, _, data = mkt
+    _history_store(data, monkeypatch, store, market)
+    table = market.market_table("2026-11-05")
+    assert table["date"] == "2026-11-05" and table["breadth"] == {"total": 1, "up": 1, "down": 0, "flat": 0}
+    r = table["rows"][0]
+    assert r["code"] == "300308" and r["pct_chg"] == 10.0 and r["main_flow"] is None
+    assert r["float_shares"] == pytest.approx(1000 * 1e4 / 2.0), "from the day's turnover"
+    assert r["total_mv"] is None and r["pe_ttm"] is None and "历史行情不含总股本" in table["note"]
+    assert (data / "web" / "xs" / "20261105.parquet").exists(), "cached on disk"
+    with pytest.raises(FileNotFoundError):
+        market.market_table("2026-11-08")
+    cal = market.calendar()
+    assert cal["min"] == "2026-11-03" and cal["max"] == "2026-11-13"
+    assert cal["holidays"] == ["2026-11-09", "2026-11-10", "2026-11-11"]
+
+
+@pytest.mark.parametrize("day, period", [
+    ("2026-11-13", "20260930"), ("2026-10-31", "20260930"), ("2026-10-30", "20260630"),
+    ("2026-04-30", "20260331"), ("2026-04-29", "20250930"), ("2025-06-18", "20250331"),
+])
+def test_ttm_uses_the_period_every_company_had_published(day, period):
+    from web.server import market
+
+    assert market.period_for(day) == period
+
+
+def test_rows_carry_their_exchange_and_the_csi_300_members(mkt):
+    import pandas as pd
+
+    market, fake, _ = mkt
+    fake.stock_individual_fund_flow_rank = lambda indicator: pd.DataFrame({"代码": ["300308"], "今日主力净流入-净额": [1.0]})
+    by = {r["code"]: r["exchange"] for r in market.market_table()["rows"]}
+    assert by == {"300308": "SZ", "600519": "SH", "000001": "SZ", "002142": "SZ"}
+    fake.index_stock_cons_csindex = lambda symbol: pd.DataFrame({"成分券代码": ["600519", "1"], "日期": "2026-11-11"})
+    m = market.index_members("000300")
+    assert m == {"index": "000300", "name": "沪深300", "as_of": "2026-11-11", "codes": ["600519", "000001"]}
+    with pytest.raises(ValueError):
+        market.index_members("399006")
+
+
+def test_csi_300_members_fall_back_to_sina(mkt):
+    import pandas as pd
+
+    market, fake, _ = mkt
+    fake.index_stock_cons_csindex = _boom
+    fake.index_stock_cons = lambda symbol: pd.DataFrame({"品种代码": ["600519"], "品种名称": ["贵州茅台"]})
+    m = market.index_members("000300")
+    assert m["codes"] == ["600519"] and m["as_of"] is None

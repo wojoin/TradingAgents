@@ -1,7 +1,15 @@
 """The web API: start an analysis from a ticker, follow it live, read and download reports.
 
   GET  /api/options                     what a run can be set to, defaulting to the last run's answers
-  GET  /api/market                      every A-share on ?date= (latest): quote, industry, main flow
+  GET  /api/market                      every A-share on ?date= (latest; any trading day): quote, industry, flow
+  GET  /api/market/calendar             the trading days a date can be picked from
+  GET  /api/market/index/{code}/members today's constituents of an index (000300: 沪深300)
+  GET  /api/watchlist                   the watchlist's groups and their stocks' rows (?rows=0: groups only)
+  POST /api/watchlist/groups            create a group {"name", "color"} (at most 256)
+  PATCH/DELETE /api/watchlist/groups/{id}           rename / recolour, or delete a group
+  PUT/DELETE /api/watchlist/groups/{id}/stocks/{code}  add an A-share to a group, or remove it
+  POST /api/watchlist/groups/{id}/stocks/{code}/move   {"to": "top"|"bottom"} within the group
+  PUT  /api/watchlist/notes/{code}      {"text"}: a stock's note, the same in every group
   GET  /api/stocks/search?q=            stocks by code prefix or name fragment
   GET  /api/stocks/{code}               one stock's row of the latest market table
   POST /api/runs  {"ticker", "options"}  queue an analysis of a stock code or name (options: date,
@@ -31,11 +39,24 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from web.server import market, reports, settings as run_settings
+from web.server import market, reports, settings as run_settings, watchlist
 from web.server.runs import RunManager
 
 DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
 SSE_WAIT_SECONDS = 15.0
+
+
+class GroupBody(BaseModel):
+    name: str | None = None
+    color: str | None = None
+
+
+class MoveBody(BaseModel):
+    to: str
+
+
+class NoteBody(BaseModel):
+    text: str = ""
 
 
 class NewRun(BaseModel):
@@ -43,7 +64,8 @@ class NewRun(BaseModel):
     options: dict | None = None
 
 
-def create_app(manager: RunManager | None = None, reports_root: Path | None = None) -> FastAPI:
+def create_app(manager: RunManager | None = None, reports_root: Path | None = None,
+               watchlist_path: Path | None = None) -> FastAPI:
     app = FastAPI(title="TradingAgents Web", docs_url="/api/docs", openapi_url="/api/openapi.json")
     app.state.manager = manager or RunManager()
     # The market table is ~5,000 rows of JSON; event streams are left uncompressed by default.
@@ -105,12 +127,77 @@ def create_app(manager: RunManager | None = None, reports_root: Path | None = No
         return StreamingResponse(stream(), media_type="text/event-stream",
                                  headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
+    @app.get("/api/market/calendar")
+    def market_calendar():
+        return market.calendar()
+
+    @app.get("/api/market/index/{index}/members")
+    def market_index_members(index: str):
+        try:
+            return market.index_members(index)
+        except ValueError as e:
+            raise HTTPException(404, str(e)) from e
+        except FileNotFoundError as e:
+            raise HTTPException(502, str(e)) from e
+
     @app.get("/api/market")
     def market_table(date: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
         try:
             return market.market_table(date)
         except FileNotFoundError as e:
             raise HTTPException(404, str(e)) from e
+
+    @app.get("/api/watchlist")
+    def get_watchlist(rows: bool = True):
+        groups = watchlist.load(watchlist_path)
+        notes = watchlist.notes(watchlist_path)
+        if not rows:
+            return {"groups": groups, "notes": notes, "max_groups": watchlist.MAX_GROUPS}
+        try:
+            w = market.watch_rows(watchlist.all_codes(groups))
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+        return {"groups": groups, "notes": notes, "max_groups": watchlist.MAX_GROUPS, "date": w["date"], "flow": w["flow"],
+                "ttm": w["ttm"], "rows": {r["code"]: r for r in w["rows"]}}
+
+    def _group_call(fn, *args):
+        try:
+            return fn(*args, watchlist_path)
+        except KeyError as e:
+            raise HTTPException(404, "no such group") from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.post("/api/watchlist/groups", status_code=201)
+    def create_group(body: GroupBody):
+        return _group_call(watchlist.create_group, body.name or "", body.color or watchlist.DEFAULT_COLOR)
+
+    @app.patch("/api/watchlist/groups/{group_id}")
+    def update_group(group_id: str, body: GroupBody):
+        return _group_call(watchlist.update_group, group_id, body.name, body.color)
+
+    @app.delete("/api/watchlist/groups/{group_id}")
+    def delete_group(group_id: str):
+        return {"groups": _group_call(watchlist.delete_group, group_id)}
+
+    @app.put("/api/watchlist/groups/{group_id}/stocks/{code}")
+    def add_to_group(group_id: str, code: str):
+        return _group_call(watchlist.add_stock, group_id, code)
+
+    @app.delete("/api/watchlist/groups/{group_id}/stocks/{code}")
+    def remove_from_group(group_id: str, code: str):
+        return _group_call(watchlist.remove_stock, group_id, code)
+
+    @app.post("/api/watchlist/groups/{group_id}/stocks/{code}/move")
+    def move_in_group(group_id: str, code: str, body: MoveBody):
+        return _group_call(watchlist.move_stock, group_id, code, body.to)
+
+    @app.put("/api/watchlist/notes/{code}")
+    def set_note(code: str, body: NoteBody):
+        try:
+            return {"code": code, "note": watchlist.set_note(code, body.text, watchlist_path)}
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
 
     @app.get("/api/stocks/search")
     def search_stocks(q: str = Query("", max_length=20), limit: int = Query(10, ge=1, le=50)):

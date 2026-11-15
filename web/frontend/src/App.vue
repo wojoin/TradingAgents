@@ -2,9 +2,12 @@
 import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import Toast from 'primevue/toast'
+import BrandMark from './components/BrandMark.vue'
+import MiniCandles from './components/MiniCandles.vue'
 
 const route = useRoute()
 const MENU = [
+  { to: '/watchlist', label: '自选', icon: 'pi pi-star', match: ['/watchlist'] },
   { to: '/stock', label: '个股', icon: 'pi pi-search', match: ['/stock'] },
   { to: '/market', label: '行情', icon: 'pi pi-table', match: ['/market'] },
   { to: '/analysis', label: '分析', icon: 'pi pi-chart-bar', match: ['/analysis', '/reports'] },
@@ -35,7 +38,7 @@ watch(collapsed, (v) => {
   <div class="shell">
     <aside class="side" :class="{ collapsed }">
       <div class="brand" :title="collapsed ? 'TradingAgents' : undefined">
-        <i class="pi pi-chart-line" /> <span class="text">TradingAgents</span>
+        <BrandMark /> <MiniCandles class="candles" /> <span class="text">TradingAgents</span>
       </div>
       <nav>
         <RouterLink v-for="m in MENU" :key="m.to" :to="m.to" class="item" :class="{ active: active === m.to }"
@@ -43,10 +46,10 @@ watch(collapsed, (v) => {
           <i :class="m.icon" /> <span class="text">{{ m.label }}</span>
         </RouterLink>
       </nav>
-      <button class="fold" :title="collapsed ? '展开菜单' : '收起菜单'" :aria-label="collapsed ? '展开菜单' : '收起菜单'"
+      <button class="fold" :title="collapsed ? '展开' : '收起'" :aria-label="collapsed ? '展开菜单' : '收起菜单'"
               @click="collapsed = !collapsed">
         <i :class="collapsed ? 'pi pi-angle-double-right' : 'pi pi-angle-double-left'" />
-        <span class="text">收起菜单</span>
+        <span class="text">收起</span>
       </button>
     </aside>
     <main class="content">
@@ -59,11 +62,11 @@ watch(collapsed, (v) => {
 <style scoped>
 .shell { display: flex; min-height: 100vh; }
 .side {
-  width: 168px; flex: none; background: #111827; color: #d1d5db;
+  width: 200px; flex: none; background: #111827; color: #d1d5db;
   position: sticky; top: 0; height: 100vh; padding: 14px 8px;
   display: flex; flex-direction: column; transition: width 0.15s ease;
 }
-.brand { display: flex; align-items: center; gap: 8px; color: #fff; font-weight: 700; font-size: 15px; padding: 4px 10px 18px; white-space: nowrap; }
+.brand { display: flex; align-items: center; gap: 6px; color: #fff; font-weight: 700; font-size: 15px; padding: 4px 10px 18px; white-space: nowrap; }
 nav { display: flex; flex-direction: column; gap: 4px; flex: 1; }
 .item, .fold {
   display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 8px;
@@ -73,7 +76,7 @@ nav { display: flex; flex-direction: column; gap: 4px; flex: 1; }
 .item.active { background: #2563eb; color: #fff; }
 .fold { border: 0; background: none; font: inherit; cursor: pointer; color: #9ca3af; }
 .side.collapsed { width: 56px; }
-.side.collapsed .text { display: none; }
+.side.collapsed .text, .side.collapsed .candles { display: none; }
 .side.collapsed .brand, .side.collapsed .item, .side.collapsed .fold { justify-content: center; padding-left: 0; padding-right: 0; }
 .content { flex: 1; min-width: 0; }
 @media (max-width: 760px) {

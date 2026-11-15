@@ -15,6 +15,7 @@ import {
 } from 'lightweight-charts'
 import { api, formatPct, formatYuan, type Kline } from '../api'
 import { kdj, macd, rsi, sma, type Series } from '../indicators'
+import { GapBands, findGaps, sixMonthsBefore, type Gap } from '../gapBands'
 
 // Daily candles with moving averages, and three lower panes, each showing an indicator
 // picked from a list (volume, MACD, KDJ, RSI) whose parameters can be changed in place.
@@ -86,6 +87,14 @@ const data = ref<Kline | null>(null)
 const hoverIndex = ref<number | null>(null)
 const range = ref(250)
 const kinds = ref<Kind[]>(load(STORE.kinds, [...DEFAULT_KINDS], validKinds))
+// The last six months' price gaps between adjacent candles, as grey bands across the price pane; can be hidden.
+const showGaps = ref<boolean>(load('kline.gaps', true, (v) => typeof v === 'boolean'))
+const gapCount = ref(0)
+let gapBands: GapBands | null = null
+let gapList: Gap[] = []
+let candleSeries: ISeriesApi<'Candlestick'> | null = null
+// The gaps under the mouse (latest first) and where to show them.
+const gapTip = ref<{ gaps: Gap[]; x: number; y: number; flip: boolean } | null>(null)
 const DEFAULT_PARAMS: Record<'MACD' | 'KDJ' | 'RSI', number[]> = {
   MACD: [...PARAM_SPEC.MACD.defaults], KDJ: [...PARAM_SPEC.KDJ.defaults], RSI: [...PARAM_SPEC.RSI.defaults],
 }
@@ -97,6 +106,17 @@ const draft = reactive<Record<'MACD' | 'KDJ' | 'RSI', (number | null)[]>>({
 const editing = ref<number | null>(null)          // which pane's settings panel is open
 const paneTops = ref<number[]>([])
 let chart: IChartApi | null = null
+
+// The crosshair's date: YYYY-MM-DD whether the library hands it as a string, a business
+// day or a timestamp.
+function formatDay(t: Time): string {
+  if (typeof t === 'string') return t
+  if (typeof t === 'number') {
+    const d = new Date(t * 1000)
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`
+  }
+  return `${t.year}-${String(t.month).padStart(2, '0')}-${String(t.day).padStart(2, '0')}`
+}
 let paneSeries: ISeriesApi<SeriesType>[][] = []
 let indexByTime = new Map<string, number>()
 let resizer: ResizeObserver | null = null
@@ -244,6 +264,16 @@ function showRange(n: number) {
 
 function onCrosshair(p: MouseEventParams) {
   hoverIndex.value = p.time !== undefined ? (indexByTime.get(String(p.time)) ?? null) : null
+  // Over a gap band in the price pane: list the gaps whose price range holds the mouse.
+  gapTip.value = null
+  if (!showGaps.value || !p.point || (p.paneIndex ?? 0) !== 0 || !candleSeries || !gapList.length) return
+  const price = candleSeries.coordinateToPrice(p.point.y)
+  if (price === null) return
+  const hits = gapList.filter((g) => price >= g.from && price <= g.to).slice(-3).reverse()
+  if (hits.length) {
+    const width = el.value?.clientWidth ?? 0
+    gapTip.value = { gaps: hits, x: p.point.x, y: p.point.y, flip: p.point.x > width - 260 }
+  }
 }
 
 async function draw() {
@@ -251,6 +281,9 @@ async function draw() {
   chart?.remove()
   chart = null
   paneSeries = []
+  candleSeries = null
+  gapList = []
+  gapTip.value = null
   error.value = ''
   hoverIndex.value = null
   loading.value = true
@@ -269,7 +302,8 @@ async function draw() {
       grid: { vertLines: { color: '#f1f3f6' }, horzLines: { color: '#f1f3f6' } },
       rightPriceScale: { borderColor: '#e3e7ec' },
       timeScale: { borderColor: '#e3e7ec' },
-      localization: { locale: 'zh-CN' },
+      // Dates as 2026-11-12 under the crosshair (the axis keeps its short labels).
+      localization: { locale: 'zh-CN', timeFormatter: formatDay },
     })
     const candles = chart.addSeries(CandlestickSeries, {
       upColor: UP, downColor: DOWN, borderUpColor: UP, borderDownColor: DOWN, wickUpColor: UP, wickDownColor: DOWN,
@@ -277,6 +311,15 @@ async function draw() {
     candles.setData(k.bars.map((b) => ({ time: b.time as Time, open: b.open, high: b.high, low: b.low, close: b.close })))
     // Less headroom above the highest candle than the library's 20%.
     candles.priceScale().applyOptions({ scaleMargins: { top: 0.07, bottom: 0.04 } })
+    candleSeries = candles
+    gapBands = new GapBands()
+    candles.attachPrimitive(gapBands)
+    // Only the last six months' gaps, counted back from the last bar.
+    const gaps = findGaps(k.bars, sixMonthsBefore(k.bars[k.bars.length - 1].time))
+    gapCount.value = gaps.length
+    gapList = gaps
+    gapBands.setGaps(gaps)
+    gapBands.setVisible(showGaps.value)
     PRICE_MAS.forEach(([, color], i) => line(color, 0).setData(points(priceMa.value[i])))
     if (props.markDate) {
       const at = [...k.bars].reverse().find((b) => b.time <= props.markDate!)
@@ -324,6 +367,12 @@ watch(draft, () => {
     })
   }
 }, { deep: true })
+
+watch(showGaps, (v) => {
+  save('kline.gaps', v)
+  gapBands?.setVisible(v)
+  if (!v) gapTip.value = null
+})
 
 function reset(kind: 'MACD' | 'KDJ' | 'RSI') {
   draft[kind] = [...PARAM_SPEC[kind].defaults]
@@ -381,6 +430,9 @@ onBeforeUnmount(() => {
       </template>
       <span v-if="loading" class="muted"><i class="pi pi-spin pi-spinner" /> 加载中</span>
       <span class="spacer" />
+      <label v-if="bars.length" class="gap-toggle" :title="`最近半年相邻两日的跳空缺口：共 ${gapCount} 个`">
+        <input v-model="showGaps" type="checkbox" /> 近半年缺口 {{ gapCount }}
+      </label>
       <span v-if="full && bars.length" class="ranges">
         <button v-for="[label, n] in RANGES" :key="label" :class="{ on: range === n }" @click="showRange(n)">{{ label }}</button>
       </span>
@@ -391,6 +443,21 @@ onBeforeUnmount(() => {
     <div v-if="error" class="muted error">K线加载失败：{{ error }}</div>
     <div ref="frame" class="frame">
       <div ref="el" class="chart" :style="{ height: `${height}px` }" />
+      <div v-if="gapTip" class="gap-tip" :style="{ top: `${gapTip.y + 14}px`, left: gapTip.flip ? 'auto' : `${gapTip.x + 14}px`,
+                                                   right: gapTip.flip ? `${(el?.clientWidth ?? 0) - gapTip.x + 14}px` : 'auto' }">
+        <div v-for="g in gapTip.gaps" :key="g.time" class="gap-item">
+          <div class="gap-head" :class="g.up ? 'up' : 'down'">{{ g.up ? '向上跳空' : '向下跳空' }} · {{ g.time }}</div>
+          <template v-if="g.up">
+            <div>当天最低价 <b>{{ g.low.toFixed(2) }}</b></div>
+            <div>前一天（{{ g.prevTime }}）最高价 <b>{{ g.prevHigh.toFixed(2) }}</b></div>
+          </template>
+          <template v-else>
+            <div>当天最高价 <b>{{ g.high.toFixed(2) }}</b></div>
+            <div>前一天（{{ g.prevTime }}）最低价 <b>{{ g.prevLow.toFixed(2) }}</b></div>
+          </template>
+          <div class="muted">缺口 {{ (g.to - g.from).toFixed(2) }}（{{ ((g.to - g.from) / (g.up ? g.prevHigh : g.prevLow) * 100).toFixed(2) }}%）</div>
+        </div>
+      </div>
       <template v-if="bars.length">
         <div v-for="(top, p) in paneTops" :key="p" class="lower" :style="{ top: `${top}px` }">
           <select :value="kinds[p]" class="pick" :aria-label="`副图${p + 1}指标`"
@@ -441,6 +508,16 @@ onBeforeUnmount(() => {
 .head { margin-bottom: 4px; gap: 10px; }
 .mas { gap: 14px; font-size: 12px; margin-bottom: 6px; }
 .spacer { flex: 1; }
+.gap-tip {
+  position: absolute; z-index: 6; pointer-events: none; background: rgba(255, 255, 255, 0.96);
+  border: 1px solid var(--border); border-radius: 6px; box-shadow: 0 4px 14px rgba(17, 24, 39, 0.12);
+  padding: 8px 10px; font-size: 12px; line-height: 1.6; min-width: 200px;
+}
+.gap-item + .gap-item { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 6px; }
+.gap-head { font-weight: 600; }
+.gap-head.up { color: var(--up); }
+.gap-head.down { color: var(--down); }
+.gap-toggle { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); cursor: pointer; }
 .ranges { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
 .ranges button { border: 0; background: #fff; padding: 3px 10px; cursor: pointer; font: inherit; font-size: 12px; color: var(--muted); }
 .ranges button + button { border-left: 1px solid var(--border); }
