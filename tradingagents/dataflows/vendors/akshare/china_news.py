@@ -6,6 +6,8 @@ Only items about the stock are kept, at two levels:
             about) or naming it: its short name, the name without its region
             prefix (贵州茅台 -> 茅台), or its code
   industry  an item whose headline names the stock's Shenwan industry (白酒, 食品饮料)
+            together with 板块 or 行业, so a headline that merely uses the word
+            (电池 in an e-bike complaint) is not taken for industry news
 
 from three sources:
 
@@ -57,6 +59,7 @@ _REGIONS = (
     "厦门", "青岛", "大连", "宁波",
 )
 _GENERIC_INDUSTRIES = {"综合", "其他", "其它"}
+_SECTOR_WORDS = re.compile("板块|行业")
 
 
 # ---------------------------------------------------------------------------
@@ -76,7 +79,7 @@ class Subject:
     def level(self, title: str, body: str, codes: str = "") -> str | None:
         if self.code in codes.split(",") or self._named(title) or self._named(body):
             return "company"
-        if any(i in title for i in self.industries):
+        if _SECTOR_WORDS.search(title) and any(i in title for i in self.industries):
             return "industry"
         return None
 
@@ -351,5 +354,6 @@ def get_china_news(ticker: str, as_of_date: str, look_back_days: int | None = No
         raise VendorUnavailableError(f"AKShare China news unavailable for {start:%Y-%m-%d}..{as_of_date}")
     return (f"# China news about {subject.label}, {start:%Y-%m-%d} to {as_of_date}\n"
             f"Kept: items tagged with or naming the company ({', '.join(subject.names)}), and items whose "
-            f"headline names its industry ({' / '.join(subject.industries) or 'none on record'}). "
+            f"headline names its industry ({' / '.join(subject.industries) or 'none on record'}) "
+            "together with 板块 or 行业. "
             "Items about neither are left out.\n\n" + cctv + wires)

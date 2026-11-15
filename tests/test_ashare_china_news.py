@@ -48,6 +48,7 @@ def env(tmp_path, monkeypatch):
         item(1, 2, "贵州茅台下调经销商代售价", "茅台精品酒下调至2359元/瓶。"),
         item(2, 3, "央行开展逆回购", "央行开展5000亿元逆回购操作。"),
         item(3, 30, "白酒板块午后活跃", "皇台酒业涨停。"),
+        item(8, 31, "华泰证券：白酒底部趋稳", "研报。"),
         item(4, 40, "沙特反倾销调查", "税号721621600519项下的产品。"),
         item(5, 50, "主力资金监控", "宁德时代遭净卖出。", codes="600519"),
         item(6, 24 * 9, "茅台九天前的消息", "旧闻。"),
@@ -83,6 +84,7 @@ def test_only_items_about_the_stock_or_its_industry_are_kept(env):
     assert "贵州茅台下调经销商代售价" in wire and "主力资金监控" in wire, "named or tagged"
     assert "Industry (1):" in wire and "白酒板块午后活跃" in wire
     assert "央行开展逆回购" not in text and "沙特反倾销" not in text and "方大集团" not in text
+    assert "白酒底部趋稳" not in text, "an industry headline needs 板块 or 行业"
     assert "茅台九天前" not in text, "outside the window"
 
 
@@ -90,6 +92,7 @@ def test_cctv_quotes_the_matching_sentence_of_a_roundup(env):
     cctv_part = china_news.get_china_news("600519.SS", TODAY, 2).split("## 财联社")[0]
     assert "贵州茅台镇举办酒文化节。" in cctv_part and "灯会" not in cctv_part
     assert "白酒行业协会发布消费报告" in cctv_part and "国务院常务会议" not in cctv_part
+    assert china_news.Subject("1", "", ("x",), ("电池",)).level("电动自行车电池售后遭质疑", "") is None
 
 
 def test_a_story_on_both_wires_is_listed_once(env):
@@ -100,7 +103,7 @@ def test_a_story_on_both_wires_is_listed_once(env):
 def test_wires_are_archived_and_paged_only_back_to_the_archive(env, monkeypatch):
     china_news.get_china_news("600519.SS", TODAY, 7)
     first = len(env.pages["cls"])
-    assert first == 3, "pages until an item is older than the 7-day backfill"
+    assert first == 4, "pages until an item is older than the 7-day backfill"
     # Two hours later only the newest page is read: the archive already reaches back.
     later = NOW + timedelta(hours=2)
     monkeypatch.setattr(store, "now_cst", lambda: later.replace(tzinfo=store.CST))
