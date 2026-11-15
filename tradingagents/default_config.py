@@ -176,6 +176,9 @@ def build_default_config() -> dict:
             "technical_indicators": "akshare,yfinance",
             "fundamental_data": "akshare,yfinance",
             "news_data": "akshare,yfinance",
+            # 董监高 and major-shareholder trades. Yahoo has none for A-shares
+            # and would report "no insider transactions", so it is no fallback.
+            "get_insider_transactions": "akshare",
         },
         # Tool-level configuration (takes precedence over category-level)
         "tool_vendors": {

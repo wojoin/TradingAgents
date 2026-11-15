@@ -222,7 +222,8 @@ def get_insider_transactions(
 ) -> str:
     """
     Retrieve insider transaction information about a company.
-    Uses the configured news_data vendor.
+    For a China A-share: 董监高 (directors, supervisors, executives) and
+    major-shareholder (持股5%以上) increases and reductions.
     Returns:
         str: A report of insider transaction data
     """

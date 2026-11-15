@@ -9,6 +9,7 @@ from tradingagents.dataflows.errors import (
 from tradingagents.dataflows.symbols import a_share_code
 from tradingagents.dataflows.vendors.akshare import (
     fundamentals as akshare_fundamentals,
+    insiders as akshare_insiders,
     news as akshare_news,
     prices as akshare_prices,
 )
@@ -150,6 +151,7 @@ VENDOR_METHODS = {
     "get_insider_transactions": {
         "alpha_vantage": get_alpha_vantage_insider_transactions,
         "yfinance": get_yfinance_insider_transactions,
+        "akshare": akshare_insiders.get_insider_transactions,
     },
     # macro_data
     "get_macro_indicators": {

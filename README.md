@@ -235,6 +235,8 @@ With the `ashare` extra installed, an A-share stock is analysed from AKShare rat
 - fundamentals: the day's valuation multiples, the latest report published by the analysis date, and the Shenwan (申万) industry's valuation and percentile;
 - financial statements dated by their publication (公告日期), so a past run sees only what had been published; A-share reports are year to date;
 - Eastmoney company news (Chinese);
+- insider trades: 董监高 increases and reductions from the exchange's disclosure, and major-shareholder (持股5%以上) trades from 同花顺 dated by announcement, with a transfer's buyers kept apart from the seller (AKShare only: Yahoo has none for A-shares);
+- sentiment from fund flows (main-force flow, margin, Stock Connect holdings, 龙虎榜), the market's limit-up pools and Eastmoney popularity, in place of StockTwits and Reddit;
 - company name and Shenwan industry from the local store, with no request.
 
 The market data store below supplies the name, industry and industry valuation; run `tradingagents-ashare sync` before analysing.
