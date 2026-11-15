@@ -377,3 +377,101 @@ def render_sentiment_report(report: SentimentReport) -> str:
         "",
         report.narrative,
     ])
+
+
+# ---------------------------------------------------------------------------
+# Sentiment Analyst, China A-shares: one report scored block by block
+# ---------------------------------------------------------------------------
+
+
+class SentimentBlock(StrEnum):
+    """The blocks an A-share sentiment read is built from, in report order."""
+
+    FUND = "资金情绪"
+    MARKET = "市场情绪"
+    POPULARITY = "人气"
+    NEWS = "新闻"
+
+
+class BlockSentiment(BaseModel):
+    """One block's read: direction, intensity, confidence and the evidence behind it."""
+
+    block: SentimentBlock = Field(
+        description="Which block: 资金情绪 (fund flow, margin, northbound, 龙虎榜), 市场情绪 "
+                    "(limit-up pools), 人气 (popularity rank, 千股千评) or 新闻 (news).",
+    )
+    band: SentimentBand = Field(
+        description="The block's direction: Bullish / Mildly Bullish / Neutral / Mixed / Mildly Bearish / Bearish.",
+    )
+    score: float = Field(
+        ge=0.0, le=10.0,
+        description="The block's intensity, 0 = maximally bearish, 5 = neutral, 10 = maximally bullish; "
+                    "consistent with its band.",
+    )
+    confidence: Literal["low", "medium", "high"] = Field(
+        description="Confidence in this block alone: 'low' when its data is unavailable, unobserved or thin.",
+    )
+    key_evidence: str = Field(
+        description="One or two sentences with the block's decisive numbers (e.g. '主力 10日净流出 9.9亿; "
+                    "融资余额 -0.7%').",
+    )
+
+
+class AShareSentimentReport(BaseModel):
+    """Structured sentiment report for a China A-share, scored block by block.
+
+    The overall fields keep the shape of ``SentimentReport``, so the header every
+    consumer reads is unchanged; ``blocks`` adds one scored entry per block.
+    """
+
+    blocks: list[BlockSentiment] = Field(
+        description="Exactly one entry per block, in this order: 资金情绪, 市场情绪, 人气, 新闻.",
+    )
+    overall_band: SentimentBand = Field(
+        description="Overall direction across the blocks. Use Mixed when blocks point in clearly different "
+                    "directions; Neutral only when all are genuinely silent.",
+    )
+    overall_score: float = Field(
+        ge=0.0, le=10.0,
+        description="Overall intensity, 0–10 with 5 neutral; consistent with overall_band. Not an average: "
+                    "weigh each block by its confidence and by how much it bears on this stock.",
+    )
+    confidence: Literal["low", "medium", "high"] = Field(
+        description="Overall confidence, given the blocks' confidence and coverage.",
+    )
+    narrative: str = Field(
+        description="The full report, in sections 资金情绪, 市场情绪, 人气, 新闻, then cross-block "
+                    "divergences, the dominant narrative, catalysts and risks, and a markdown table of key "
+                    "signals (direction, block, evidence).",
+    )
+
+
+def render_ashare_sentiment_report(report: AShareSentimentReport) -> str:
+    """The SentimentReport header, a table scoring each block, then the narrative.
+
+    Blocks are shown in the fixed order; a block the model left out is shown as
+    not assessed rather than dropped, and a repeated block keeps its first entry.
+    """
+    by_block: dict[SentimentBlock, BlockSentiment] = {}
+    for b in report.blocks:
+        by_block.setdefault(b.block, b)
+    rows = []
+    for block in SentimentBlock:
+        b = by_block.get(block)
+        if b is None:
+            rows.append(f"| {block.value} | not assessed | — | — | — |")
+        else:
+            evidence = " ".join(b.key_evidence.split()).replace("|", "/")
+            rows.append(f"| {block.value} | {b.band.value} | {b.score:.1f} | {b.confidence.capitalize()} | {evidence} |")
+    return "\n".join([
+        f"**Overall Sentiment:** **{report.overall_band.value}** (Score: {report.overall_score:.1f}/10)",
+        f"**Confidence:** {report.confidence.capitalize()}",
+        "",
+        "**Sentiment by block:**",
+        "",
+        "| Block | Direction | Score | Confidence | Key evidence |",
+        "|---|---|---|---|---|",
+        *rows,
+        "",
+        report.narrative,
+    ])

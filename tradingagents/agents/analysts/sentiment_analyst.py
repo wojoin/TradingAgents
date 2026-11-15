@@ -19,7 +19,8 @@ point-in-time.
 
 The report is a SentimentReport through structured output where the provider
 supports it and free text otherwise, so the band, score and confidence header
-reads the same across providers.
+reads the same across providers. An A-share's is an AShareSentimentReport: the
+same header, then each block (资金情绪, 市场情绪, 人气, 新闻) scored on its own.
 """
 
 from datetime import datetime, timedelta
@@ -29,7 +30,12 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from tradingagents.agents.context import get_instrument_context_from_state, get_language_instruction
 from tradingagents.agents.post_screen import jev_screen
-from tradingagents.agents.schemas import SentimentReport, render_sentiment_report
+from tradingagents.agents.schemas import (
+    AShareSentimentReport,
+    SentimentReport,
+    render_ashare_sentiment_report,
+    render_sentiment_report,
+)
 from tradingagents.agents.structured import (
     NO_EXTERNAL_TOOLS,
     bind_structured,
@@ -68,6 +74,8 @@ def create_sentiment_analyst(llm):
     that do not support it).
     """
     structured_llm = bind_structured(llm, SentimentReport, "Sentiment Analyst")
+    # An A-share's report is scored block by block (资金情绪 / 市场情绪 / 人气 / 新闻).
+    ashare_structured_llm = bind_structured(llm, AShareSentimentReport, "Sentiment Analyst")
 
     def sentiment_analyst_node(state):
         ticker = state["company_of_interest"]
@@ -79,7 +87,8 @@ def create_sentiment_analyst(llm):
         # returns a string (no exceptions surface from here), so the LLM
         # always sees something — either real data or a clear placeholder.
         news_block = get_news.func(ticker, start_date, end_date)
-        if a_share_code(ticker):
+        ashare = bool(a_share_code(ticker))
+        if ashare:
             # StockTwits and Reddit carry next to nothing on A-shares; the
             # A-share read is fund flows, market-wide limit-up mood and
             # Eastmoney attention instead.
@@ -140,10 +149,10 @@ def create_sentiment_analyst(llm):
         formatted_messages = prompt.format_messages(messages=state["messages"])
 
         report_text = invoke_structured_or_freetext(
-            structured_llm,
+            ashare_structured_llm if ashare else structured_llm,
             llm,
             formatted_messages,
-            render_sentiment_report,
+            render_ashare_sentiment_report if ashare else render_sentiment_report,
             "Sentiment Analyst",
         )
 
@@ -292,11 +301,19 @@ def _build_ashare_system_message(
 
 ## Output fields
 
-Fill the following fields:
+Score each block on its own first, then the whole. Fill the following fields:
 
+- **blocks**: exactly one entry per block, in this order: 资金情绪 (Block 1), 市场情绪 (Block 2), 人气 (Block 3), 新闻 (Block 4). For each:
+  - **band**: Bullish / Mildly Bullish / Neutral / Mixed / Mildly Bearish / Bearish, read from that block's data alone.
+  - **score**: 0 (maximally bearish) to 10 (maximally bullish), 5 neutral; consistent with its band.
+  - **confidence**: low / medium / high for that block alone; low when its data is unavailable, unobserved or thin, and say so rather than guess.
+  - **key_evidence**: one or two sentences with the block's decisive numbers.
+  市场情绪 is the whole market's mood, so score it as the backdrop it gives this stock, not as the stock's own sentiment.
 - **overall_band**: Exactly one of Bullish / Mildly Bullish / Neutral / Mixed / Mildly Bearish / Bearish. Use Mixed when blocks point in clearly different directions; Neutral only when all blocks are genuinely silent.
-- **overall_score**: A number from 0 (maximally bearish) to 10 (maximally bullish); 5 is neutral. Keep it consistent with overall_band.
-- **confidence**: low / medium / high, based on data coverage and quality.
+- **overall_score**: 0 to 10, 5 neutral; consistent with overall_band. It is not an average of the block scores: weigh each block by its confidence and by how much it bears on this stock (market mood bears less on a large-cap blue chip than on a small-cap theme stock).
+- **confidence**: low / medium / high overall, given the blocks' confidence and coverage.
 - **narrative**: Organized in these sections: 资金情绪 (fund flow, margin, northbound, 龙虎榜), 市场情绪, 人气, 新闻; then cross-block divergences, the dominant narrative, catalysts and risks, and a markdown summary table of key sentiment signals (direction, block, supporting evidence).
+
+If you answer in prose rather than these fields, open with the overall band, score and confidence, then a table with one row per block (Block | Direction | Score | Confidence | Key evidence), then the narrative.
 
 {get_language_instruction()}"""

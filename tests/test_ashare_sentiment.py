@@ -230,3 +230,74 @@ def test_a_us_stock_still_reads_the_social_feeds(monkeypatch):
     monkeypatch.setattr(sa.ashare_sentiment, "get_fund_sentiment", lambda *a: pytest.fail("not an A-share"))
     sa.create_sentiment_analyst(_LLM())({"company_of_interest": "NVDA", "trade_date": "2026-11-13", "messages": []})
     assert seen == ["st", "rd"]
+
+
+# ---------------------------------------------------------------------------
+# The report, scored block by block
+# ---------------------------------------------------------------------------
+def _block(block, band, score, confidence="medium", evidence="e"):
+    from tradingagents.agents.schemas import BlockSentiment
+    return BlockSentiment(block=block, band=band, score=score, confidence=confidence, key_evidence=evidence)
+
+
+def test_the_a_share_report_keeps_the_header_and_scores_each_block():
+    from tradingagents.agents.schemas import (
+        AShareSentimentReport,
+        SentimentBand,
+        SentimentBlock,
+        render_ashare_sentiment_report,
+    )
+    report = AShareSentimentReport(
+        blocks=[_block(SentimentBlock.MARKET, SentimentBand.BEARISH, 3.5, "high", "炸板率 48.6%"),
+                _block(SentimentBlock.FUND, SentimentBand.MILDLY_BEARISH, 4.2, evidence="主力 10日 -9.88亿 | 融资 -0.7%"),
+                _block(SentimentBlock.FUND, SentimentBand.BULLISH, 9.0)],      # a repeat keeps the first
+        overall_band=SentimentBand.MILDLY_BEARISH, overall_score=4.4, confidence="medium", narrative="## 资金情绪\n...")
+    md = render_ashare_sentiment_report(report)
+    lines = md.splitlines()
+    assert lines[0] == "**Overall Sentiment:** **Mildly Bearish** (Score: 4.4/10)"
+    assert lines[1] == "**Confidence:** Medium"
+    rows = [line for line in lines if line.startswith("| ") and "Block" not in line]
+    assert [r.split(" | ")[0][2:] for r in rows] == ["资金情绪", "市场情绪", "人气", "新闻"], "fixed order"
+    assert "| 资金情绪 | Mildly Bearish | 4.2 | Medium | 主力 10日 -9.88亿 / 融资 -0.7% |" in md
+    assert "| 人气 | not assessed |" in md and "9.0" not in md
+    assert md.endswith("## 资金情绪\n...")
+
+
+def test_an_a_share_run_asks_for_the_block_scored_report(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from tradingagents.agents.analysts import sentiment_analyst as sa
+    from tradingagents.agents.schemas import (
+        AShareSentimentReport,
+        SentimentBand,
+        SentimentBlock,
+        SentimentReport,
+    )
+
+    monkeypatch.setattr(sa.get_news, "func", lambda *a: "news")
+    for name in ("get_fund_sentiment", "get_market_sentiment", "get_popularity"):
+        monkeypatch.setattr(sa.ashare_sentiment, name, lambda *a: "block")
+    monkeypatch.setattr(sa, "fetch_stocktwits_messages", lambda *a, **k: "")
+    monkeypatch.setattr(sa, "fetch_reddit_posts", lambda *a, **k: "")
+    monkeypatch.setattr(sa, "jev_screen", lambda t: None)
+    results = {
+        AShareSentimentReport: AShareSentimentReport(
+            blocks=[_block(b, SentimentBand.NEUTRAL, 5.0) for b in SentimentBlock],
+            overall_band=SentimentBand.NEUTRAL, overall_score=5.0, confidence="low", narrative="n"),
+        SentimentReport: SentimentReport(overall_band=SentimentBand.NEUTRAL, overall_score=5.0,
+                                         confidence="low", narrative="n"),
+    }
+    prompts = {}
+
+    def bind(schema):
+        structured = MagicMock()
+        structured.invoke.side_effect = lambda p: prompts.__setitem__(schema, p) or results[schema]
+        return structured
+    llm = MagicMock()
+    llm.with_structured_output.side_effect = bind
+    node = sa.create_sentiment_analyst(llm)
+    a = node({"company_of_interest": "600519.SS", "trade_date": "2026-11-13", "messages": []})["sentiment_report"]
+    assert "**Sentiment by block:**" in a and "| 市场情绪 | Neutral | 5.0 |" in a
+    assert "exactly one entry per block" in str(prompts[AShareSentimentReport])
+    us = node({"company_of_interest": "NVDA", "trade_date": "2026-11-13", "messages": []})["sentiment_report"]
+    assert "Sentiment by block" not in us and us.startswith("**Overall Sentiment:** **Neutral**")
