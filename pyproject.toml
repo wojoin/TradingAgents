@@ -51,6 +51,13 @@ ashare = [
     "pyarrow>=26.0.1",
 ]
 
+# The web app under web/ (FastAPI server, Vue front end):
+# pip install "tradingagents[web]", then uvicorn web.server.app:app
+web = [
+    "fastapi>=0.115",
+    "uvicorn>=0.32",
+]
+
 [project.scripts]
 tradingagents = "cli.main:app"
 tradingagents-ashare = "tradingagents.dataflows.vendors.akshare.cli:main"
@@ -67,6 +74,7 @@ tradingagents = ["assets/*.svg"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 addopts = "-ra --strict-markers -m \"not integration\""
 markers = [
     "unit: fast isolated unit tests",
