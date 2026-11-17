@@ -167,6 +167,173 @@ export interface MarketStats {
 }
 
 // The day's limit moves: limit-ups by how many days in a row (连板), 炸板, limit-downs.
+// 申万一级 industries over the last N trading days (the heat map) and their valuation.
+export interface SectorRow {
+  name: string
+  code: string
+  pct: (number | null)[]        // daily change (%), one per ``dates``
+  cum: number | null            // compounded over the N days (%)
+  cum5: number | null
+  cum20: number | null
+  pe: number | null
+  pb: number | null
+  dy: number | null             // dividend yield (%)
+  pe_rank: number | null        // share of days since ``since`` at or below today's (%)
+  pb_rank: number | null
+  amount_share: number | null   // share of the market's amount traded (%)
+}
+export interface MarketSectors {
+  end: string | null
+  as_of: string                 // the 申万 day shown (the day picked, or the last before it)
+  days: number
+  dates: string[]
+  industries: SectorRow[]
+  since: string
+  note: string | null
+}
+// 行业拥挤度: each industry's turnover share and rate (5-day averages) against its own history.
+export interface CrowdRow {
+  name: string
+  share: number | null           // today's share of the market's amount traded (%)
+  share5: number | null          // its 5-day average
+  share5_20d: number | null      // that average 20 trading days ago
+  share_rank: number             // where share5 sits since ``since`` (%)
+  turnover5: number | null       // 5-day average turnover rate (%)
+  turnover_rank: number
+  crowd: number                  // 拥挤度: the mean of the two ranks
+  cum20: number | null           // change over 20 trading days (%)
+}
+export interface MarketCrowding { end: string | null; as_of: string; since: string; smooth: number; industries: CrowdRow[]; note: string | null }
+
+export interface MarketValuation {
+  end: string | null
+  as_of: string
+  note: string | null
+  // y10: China's 10-year yield (%); erp: 股债性价比, 100 / PE less y10 (%)
+  days: { date: string; pe: number | null; pb: number | null; dy: number | null; y10: number | null; erp: number | null }[]
+}
+
+// 两融余额 (Shanghai + Shenzhen), in yuan; a day is published the next morning.
+export interface MarketMargin {
+  range: StatsRange
+  start: string
+  as_of: string
+  note: string | null
+  days: { date: string; total: number | null; fin: number | null; fin_buy: number | null; sh: number | null; sz: number | null; chg: number | null }[]
+}
+
+// QVIX: the 50ETF option volatility index (China's VIX).
+export interface MarketQvix {
+  range: StatsRange
+  start: string
+  as_of: string
+  since: string
+  rank: number | null            // share of days since ``since`` at or below the last close (%)
+  median: number | null
+  days: { date: string; close: number | null; high: number | null }[]
+}
+// The whole market's main-force flow (Eastmoney, the last 120 trading days), in yuan.
+export interface MarketFlowDay {
+  date: string
+  main: number | null
+  super: number | null
+  large: number | null
+  mid: number | null
+  small: number | null
+  main_pct: number | null        // of the amount traded (%)
+}
+export interface MarketFlow { range: StatsRange; start: string; as_of: string; first: string; days: MarketFlowDay[] }
+export type FlowSpan = '1d' | '5d' | '10d'
+export interface IndustryFlow {
+  date: string
+  span: FlowSpan
+  available: boolean
+  note?: string
+  total?: number | null
+  sw1?: { name: string; flow: number | null }[]
+  sw2?: { name: string; flow: number | null }[]
+}
+// Shares coming off lock-up in the next 30 days.
+export interface MarketReleases {
+  date: string
+  end: string
+  total: number
+  count: number
+  days: { date: string; count: number; value: number | null }[]
+  stocks: { code: string; name: string; date: string; kind: string; value: number | null; float_share: number | null }[]
+}
+// The day's 龙虎榜.
+export interface LhbStock {
+  code: string
+  name: string
+  close: number | null
+  pct: number | null
+  net: number | null             // 龙虎榜净买额
+  buy: number | null
+  sell: number | null
+  net_share: number | null       // 净买额占总成交比 (%)
+  turnover: number | null
+  note: string                   // 解读
+  reason: string                 // 上榜原因
+  inst_buyers: number | null
+  inst_sellers: number | null
+  inst_net: number | null        // 机构买入净额
+}
+export interface MarketLhb {
+  date: string
+  available: boolean
+  note?: string
+  count?: number
+  net?: number | null
+  inst_net?: number | null
+  inst_count?: number
+  stocks: LhbStock[]
+}
+
+// The limit-ups' themes (同花顺 涨停原因 split at "+"), counted on each day of ``dates``.
+export interface MarketThemes {
+  date: string
+  dates: string[]
+  have: string[]                 // the days the pool served
+  themes: { name: string; today: number; counts: number[]; total: number; days_on: number; stocks: { code: string; name: string }[] }[]
+}
+
+// The market's breadth and short-term mood on each trading day (null: not enough history).
+export interface BreadthDay {
+  date: string
+  prem_n: number | null          // yesterday's limit-ups
+  prem_avg: number | null        // their average change today (%): 涨停溢价
+  prem_up: number | null         // the share of them that rose today (%)
+  promo_1: number | null         // 晋级率 (%): 首板 -> 2 板
+  promo_2: number | null         //   2 板 -> 3 板
+  promo_3: number | null         //   3 板及以上 -> higher
+  promo_multi: number | null     //   every 连板 (2 板及以上) stock
+  promo_all: number | null       //   every limit-up of yesterday
+  nh60: number | null            // 60-day new highs / lows (count)
+  nl60: number | null
+  nh250: number | null           // 250-day (52-week) new highs / lows
+  nl250: number | null
+  ma20: number | null            // share of stocks above their 20 / 60-day MA (%)
+  ma60: number | null
+  height: number | null          // 空间板: the day's highest run of limit-ups
+  multi_n: number | null         // stocks on a run of two or more
+  mood: number | null            // 情绪综合分 0–100: the average of the six parts below
+  m_updown: number | null        // 涨跌比
+  m_limit: number | null         // 涨停跌停比
+  m_seal: number | null          // 封板率
+  m_prem: number | null          // 涨停溢价 (−5% … +5% on 0–100)
+  m_promo: number | null         // 晋级率 (0 … 40%)
+  m_height: number | null        // 空间板 (1 … 8 boards)
+  [size: `size_${string}`]: number | null   // median change of a size band (%): size_大盘 …
+}
+export interface MarketBreadth {
+  range: StatsRange
+  start: string
+  end: string
+  days: BreadthDay[]
+  bands: { name: string; rule: string }[]
+}
+
 export interface LimitStock {
   code: string
   name: string
@@ -324,6 +491,24 @@ export const api = {
   marketCalendar: () => request<MarketCalendar>('/api/market/calendar'),
   marketStats: (range: StatsRange, end?: string) =>
     request<MarketStats>(`/api/market/stats?range=${range}${end ? `&end=${end}` : ''}`),
+  marketSectors: (days: number, end?: string) =>
+    request<MarketSectors>(`/api/market/sectors?days=${days}${end ? `&end=${end}` : ''}`),
+  marketCrowding: (end?: string) => request<MarketCrowding>(`/api/market/crowding${end ? `?end=${end}` : ''}`),
+  marketValuation: (end?: string) => request<MarketValuation>(`/api/market/valuation${end ? `?end=${end}` : ''}`),
+  marketMargin: (range: StatsRange, end?: string) =>
+    request<MarketMargin>(`/api/market/margin?range=${range}${end ? `&end=${end}` : ''}`),
+  marketQvix: (range: StatsRange, end?: string) =>
+    request<MarketQvix>(`/api/market/qvix?range=${range}${end ? `&end=${end}` : ''}`),
+  marketFlow: (range: StatsRange, end?: string) =>
+    request<MarketFlow>(`/api/market/flow?range=${range}${end ? `&end=${end}` : ''}`),
+  industryFlow: (span: FlowSpan, date?: string) =>
+    request<IndustryFlow>(`/api/market/flow/industry?span=${span}${date ? `&date=${date}` : ''}`),
+  marketReleases: (date?: string) => request<MarketReleases>(`/api/market/releases${date ? `?date=${date}` : ''}`),
+  marketLhb: (date?: string) => request<MarketLhb>(`/api/market/lhb${date ? `?date=${date}` : ''}`),
+  marketThemes: (days: number, date?: string) =>
+    request<MarketThemes>(`/api/market/themes?days=${days}${date ? `&date=${date}` : ''}`),
+  marketBreadth: (range: StatsRange, end?: string) =>
+    request<MarketBreadth>(`/api/market/breadth?range=${range}${end ? `&end=${end}` : ''}`),
   marketLimits: (date?: string) => request<LimitBoard>(`/api/market/limits${date ? `?date=${date}` : ''}`),
   marketSync: () => request<MarketSync>('/api/market/sync'),
   startMarketSync: () => request<MarketSync>('/api/market/sync', { method: 'POST' }),

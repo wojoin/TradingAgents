@@ -214,6 +214,9 @@ def invalidate() -> None:
         _TABLES.clear()
     for f in (_read_xs, pct_5d, _history_day, _daily_stats):
         f.cache_clear()
+    from web.server import breadth, extras  # they import this module: imported here, not at the top
+    breadth.invalidate()
+    extras.invalidate()
 
 
 def _window(day: str, n: int = 5) -> list[str]:

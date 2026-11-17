@@ -346,7 +346,7 @@ onMounted(async () => {
         <StockMenu ref="stockMenu" extras />
       </div>
     </div>
-    <MarketStats :rows="table?.rows || []" :date="date" @industry="showIndustry" />
+    <MarketStats :rows="table?.rows || []" :date="date" :flow-label="table?.flow.label" :flow-note="table?.flow.note" @industry="showIndustry" />
     <!-- The bottom bar: what the figures rest on. -->
     <div class="bottom">
       <span v-if="universe === 'hs300' && hs300?.asOf" class="muted small">成分股名单 {{ hs300.asOf }}（中证指数公司）</span>

@@ -55,6 +55,35 @@ A browser front end for TradingAgents, with a left-hand menu:
   (about a month deep) fills in the Beijing stocks without a reason. A closed day's details are
   kept in `.akshare_data/web/limit_detail/`; a day neither feed serves shows — and is asked
   again after ten minutes.
+  The stats are laid out by category, the most important first, each in groups: 市场全景
+  (今日涨跌, 指数与量能, 资金与风险), 短线情绪 (情绪温度, 涨停板, 主线题材, 情绪指标, 龙虎榜), 板块与资金 (行业表现, 行业轮动), 市场宽度与风格
+  (市场宽度, 风格) and 估值; a category folds, remembered in the browser, and the chips at the
+  top jump to one.
+  Also: the market's breadth and short-term mood (`server/breadth.py`): 涨停溢价
+  (yesterday's limit-ups today) and 连板晋级率, 大小盘风格 (the median change of the top 300 /
+  301–800 / 801–1800 / smallest 400 by float value, ST left out), 60- and 250-day new highs and
+  lows, and the share above the 20- and 60-day MAs, on prices adjusted by compounding each
+  day's change. Two years of base are kept in `.akshare_data/web/panel_v1_<base through>.parquet`
+  (a few seconds to build once); before the daily snapshots a day's float value is its close
+  times the latest float shares.
+  Then sectors and valuation (`server/sectors.py`), from 申万宏源研究's official daily
+  figures: a heat map of the 31 申万一级 industries' daily change over the last 10 or 20
+  trading days, each industry's PE, PB and dividend yield with its percentile since 2021, the
+  industries' crowding (行业拥挤度: their 5-day turnover share and rate ranked against their own history since 2021), the day's main-force flow summed by industry (latest day only, from the table's rows), and
+  申万A指's PE, PB and dividend yield since 2005 with its percentile over a chosen span. The
+  series are the data sync's `ts/sw_daily` and `ts/sw_market`, topped up here at most once a
+  closed trading day; when 申万 is down the copy on disk is used and the card says so.
+  More (`server/extras.py`): 两融余额 for Shanghai and Shenzhen (the data sync's
+  `margin_sh` / `margin_sz` history, topped up from the exchanges; a day is published the next
+  morning), the 10-year bond yield (`ts/bond`) that gives 股债性价比 (100 / PE less the yield),
+  and the limit-ups' themes (同花顺's 涨停原因 split at "+") counted over 3, 5 or 10 days.
+  空间板高度 (the highest run of limit-ups) comes with the breadth figures.
+  Also from `server/extras.py`: QVIX (the 50ETF volatility index, the data sync's `qvix`), the
+  market's main-force flow (Eastmoney, the last 120 trading days), main-force flow by 申万
+  industry over 1, 5 or 10 days (Eastmoney's per-stock rankings, latest day only), the shares
+  coming off lock-up in the next 30 days, and the day's 龙虎榜 with the institutions' buying
+  (kept in `.akshare_data/web/lhb/` once the day is closed). 情绪综合分 (`server/breadth.py`)
+  averages six short-term readings put on 0–100.
 - **分析** (analysis): start an analysis from a stock code or name (a name resolves to
   its code, and an ambiguous one lists the candidates), follow every agent live, and
   the saved reports in a table below, each downloadable as Markdown, HTML or a ZIP.
@@ -138,6 +167,17 @@ Keep the server on `127.0.0.1`: it has no login, and every run spends model cred
 | GET | `/api/market?date=YYYY-MM-DD` | every A-share on the day (latest by default; any trading day) |
 | GET | `/api/market/calendar` | the first and last (closed) trading day, the holidays in between, and the days not synced yet |
 | GET | `/api/market/stats` | `?range=1d\|60d\|6m\|1y&end=`: rises, falls, unchanged and amount traded, day by day |
+| GET | `/api/market/sectors` | `?days=10\|20&end=`: 申万一级 industries' heat map and valuation percentiles |
+| GET | `/api/market/crowding` | `?end=`: 行业拥挤度 |
+| GET | `/api/market/valuation` | `?end=`: 申万A指's PE, PB and dividend yield since 2005 |
+| GET | `/api/market/margin` | `?range=&end=`: 两融余额 (Shanghai + Shenzhen) each trading day |
+| GET | `/api/market/themes` | `?days=3\|5\|10&date=`: the limit-ups' themes by day |
+| GET | `/api/market/qvix` | `?range=&end=`: QVIX, China's VIX |
+| GET | `/api/market/flow` | `?range=&end=`: the market's main-force flow |
+| GET | `/api/market/flow/industry` | `?span=1d\|5d\|10d&date=`: main-force flow by 申万 industry |
+| GET | `/api/market/releases` | `?date=`: lock-up expiries in the next 30 days |
+| GET | `/api/market/lhb` | `?date=`: the day's 龙虎榜 |
+| GET | `/api/market/breadth` | `?range=&end=`: 涨停溢价 and 晋级率, size styles, new highs and lows, share above MAs |
 | GET | `/api/market/limits` | `?date=`: limit-ups by days in a row (with shape, reason, sealing times, orders), 炸板 and limit-downs |
 | GET / POST | `/api/market/sync` | the background snapshot sync: its status and progress, or start it |
 | GET | `/api/market/index/000300/members` | the CSI 300's constituents today |

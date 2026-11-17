@@ -46,6 +46,10 @@ const SECTIONS: Section[] = [
         how: '衡量打板资金的成功率和情绪：**低于 20% 说明封板坚决、情绪好**；**超过 40% 说明追高资金被套，短线情绪转弱**。' },
       { term: '首板 / 连板 / 最高连板', what: '连续收盘涨停的交易日数：第一天为首板，连续 N 天为 N 连板；最高连板是当天所有涨停股中连板天数最多的。',
         how: '**最高连板高度是短线情绪的「温度计」**：高度不断抬升说明投机氛围浓，**高位股断板、高度下降往往是情绪退潮的信号**。' },
+      { term: '空间板高度', what: '每天涨停股中**连续涨停天数最多**的那只（空间板）的板数，以及连板（2板及以上）家数，随时间画成曲线。',
+        how: '短线**情绪周期**的主线：**高度不断抬升是发酵期**，**高度骤降、龙头断板是退潮期**，长期在 2–3 板徘徊是冰点；冰点后重新出现高标常是新周期的起点。' },
+      { term: '主线题材', what: '把每只涨停股的涨停原因（同花顺）按「+」拆成题材，统计近 3/5/10 个交易日每天各题材的涨停家数。',
+        how: '**连续多日都有涨停、家数还在增加的题材是主线**；只出现一天的多为一日游；主线题材家数开始减少，说明炒作进入尾声。' },
       { term: '连板天梯', what: '把当天涨停股按连板天数分层排列，最高的在上。',
         how: '看各层有多少只：**梯队完整（各高度都有）说明接力顺畅**；**只剩首板说明没有持续性**。' },
       { term: '涨停形态', what: '按当天开盘价与最低价判断。一字板：开盘即涨停且全天未打开；T字板：开盘涨停，盘中开板后又回封；换手板：盘中逐步拉升至涨停。',
@@ -83,6 +87,32 @@ const SECTIONS: Section[] = [
           '对照指数：同涨同跌说明涨跌面广；**指数涨、腾落线跌，是少数权重股在撑，需警惕**；指数跌、腾落线平或涨，是多数股票抗跌。',
           '**只计家数不计涨幅**，涨跌幅度看「个股中位数」；不同区间起点不同，**数值不能横比**。',
         ] },
+      { term: '情绪综合分', what: '把**涨跌比、涨停跌停比、封板率、涨停溢价、晋级率、空间板**六项各折算成 0–100 后取平均：比例类直接用百分比，涨停溢价 −5%→0、+5%→100，晋级率 40% 及以上为 100，空间板 1 板为 0、8 板及以上为 100。',
+        how: '**≥80 过热**（追高风险大）、60–80 活跃、40–60 中性、20–40 低迷、**<20 冰点**（冰点后回升常是短线机会）。各项等权，仅作参考，宜结合各分项看是哪一项拖累或拉动。' },
+      { term: '龙虎榜', what: '交易所公布的当日异动股票（涨跌幅偏离、换手率过高等）及买卖金额最大的营业部席位，收盘后约 18:00 公布；本页列出席位净买、机构净买和上榜原因。',
+        how: '**机构大额净买多被视为认可**，**游资席位集中买入多为短线炒作**；净买额占成交比越高，席位的影响越大。次日走势还要看市场情绪，不宜单凭上榜追买。' },
+      { term: '涨停溢价', what: '昨日收盘涨停的股票今天的**平均涨跌幅**，以及其中上涨的占比。',
+        how: '短线情绪最直接的指标：**为正说明追涨停能赚钱**、情绪好；**持续为负说明打板亏钱**，情绪退潮，宜降低短线仓位。' },
+      { term: '连板晋级率', what: '昨日涨停的股票今天**再次涨停的比例**：首板→2板、2板→3板、3板以上再晋级，以及连板（2板及以上）整体。',
+        how: '晋级率高说明接力资金积极、连板容易走出来；**高位晋级率骤降常是情绪见顶的信号**。首板晋级率一般在 20%–30%，明显高于此为强势。' },
+      { term: '大小盘风格', what: '每天按流通市值排名分档：**大盘前 300（≈沪深300）、中盘 301–800（≈中证500）、小盘 801–1800（≈中证1000）、微盘最小 400**，不含 ST，统计各档股票涨幅的中位数并累计。日线快照之前的市值按当日收盘价 × 最新流通股本估算。',
+        how: '**哪条线在上，资金就偏好哪类股票**：大盘领先多见于防御或权重行情，小盘、微盘领先说明题材和投机活跃。风格切换往往持续一段时间。' },
+      { term: '新高新低', what: '收盘价（复权）**高于此前 59 个交易日每天收盘**的为 60 日新高，低于的为新低；250 日（约 52 周）同理。上市不满所需天数的不计。',
+        how: '**新高多于新低说明市场在走强**；**指数创新高而新高家数减少，是上涨面收窄的警示**；新低家数见顶回落常出现在底部区域。' },
+      { term: '均线上方占比', what: '收盘价（复权）**高于自身 20 日、60 日均线的股票占比**。',
+        how: '**高于 80% 偏热、低于 20% 超跌**；20 日线反映短期，60 日线反映中期。从 20% 以下回升并站上 50%，常是行情转强的确认。' },
+      { term: '股债性价比', what: '申万A指的**盈利收益率（1 ÷ 市盈率）减去 10 年期国债收益率**，即买股票比买国债多得的风险溢价，也叫 ERP。',
+        how: '**分位越高股票相对债券越便宜**：历史上 **≥80% 分位多对应市场底部区域**，**≤20% 多对应顶部区域**。利率下行时同样的市盈率更有吸引力，所以比单看市盈率更全面；适合判断长期位置，不适合短线择时。' },
+      { term: '全市场估值', what: '申万A指（覆盖全部 A 股，市值加权）每天的市盈率、市净率和股息率，2005 年至今；分位为当前值在所选区间（近 1/3/5/10 年或全部）中的位置。',
+        how: '**市盈率、市净率分位越低越便宜，股息率相反**。**低于 20% 分位常是长期布局的区域，高于 80% 要控制仓位**。估值适合判断长期位置，**不适合短线择时**：便宜可以更便宜，贵也可以更贵。' },
+      { term: '市场资金流', what: '东方财富全市场主力（超大单 + 大单）净流入及其占成交额的比例，另列超大单、大单、中单、小单分项，近约 120 个交易日。',
+        how: '按成交单大小推算，不是真实账户数据。**主力持续净流出而小单净流入，常是机构派发、散户接盘**；主力由持续流出转为流入，是资金回流的信号。' },
+      { term: '市场波动率（QVIX）', what: '50ETF 期权的隐含波动率，即中国版「恐慌指数」VIX，2015 年至今；一般滞后一个交易日。',
+        how: '**急升说明市场恐慌**，常出现在急跌的末段，恐慌见顶往往接近短期底部；**长期处于极低位说明过度平静**，要警惕突然的大波动。' },
+      { term: '限售解禁', what: '未来 30 天每天到期可以卖出的限售股市值（东方财富），以及解禁市值最大的个股和占解禁前流通市值的比例。',
+        how: '**解禁市值大、占流通市值比例高（≥10%）的个股，解禁前后往往承压**；全市场解禁集中的日子整体也易受影响。实际是否减持要看股东意愿，首发原股东、定增解禁通常压力更大。' },
+      { term: '两融余额', what: '沪深两市融资（借钱买股）与融券（借股卖出）的未还余额之和。交易所次日公布，所以最新一般是前一交易日。',
+        how: '反映**杠杆资金**多少：**余额持续增加说明加杠杆做多**；**单日大幅减少常是去杠杆、被动平仓**，会放大下跌。余额与指数背离（指数涨而余额降）说明杠杆资金不认可。' },
       { term: '市场成交额', what: '沪深京全部 A 股当天成交额之和（元，显示为亿、万亿）。',
         how: '量是价的先行指标：**放量上涨说明增量资金入场，缩量上涨难持续**；成交额持续萎缩常见于行情末期或底部。' },
     ],
@@ -98,6 +128,16 @@ const SECTIONS: Section[] = [
       { term: '成交额 / 成交占比', what: '行业内股票成交额之和，及其占全市场成交额的比例。',
         how: '**成交占比持续上升说明资金在向该行业集中**。' },
       { term: '领涨', what: '行业内当天涨幅最大的股票及其涨幅。' },
+      { term: '行业轮动热力图', what: '申万一级行业指数（申万官方，**市值加权**）最近 10 或 20 个交易日每天的涨跌幅，按区间累计涨幅排序；红涨绿跌，颜色越深幅度越大。',
+        how: '**连续变红的行业是资金正在流入的方向**；一行由红转绿、另一行由绿转红，说明**资金在轮动切换**。所有行业同时变红或变绿是普涨普跌，不是轮动。' },
+      { term: '行业拥挤度', what: '申万一级行业近 5 日平均的**成交额占比**和**换手率**，各自在 2021 年以来每天同样 5 日平均中的分位，两者平均即拥挤度（0–100）。',
+        how: '**≥80 为拥挤**：交易过热、资金一致性高，**易出现快速回撤**，尤其是 20 日涨幅已经很大的行业；拥挤但在下跌说明资金正在出逃。**≤20 为冷清**：关注度低，可能被低估或正被遗弃。拥挤度描述的是交易热度，不是方向。' },
+      { term: '行业估值分位', what: '行业当前市盈率（PE）、市净率（PB）在 2021 年以来每天数值中的位置：分位 30% 表示历史上有 30% 的日子比现在更便宜或一样。',
+        how: '**分位 ≤20% 偏便宜，≥80% 偏贵**。**不同行业估值水平天然不同**（银行 PE 常年个位数，科技股几十倍），所以**看分位而非绝对值**；周期行业在景气高点 PE 反而低，宜结合 PB 看。' },
+      { term: '股息率', what: '过去 12 个月现金分红 ÷ 市值。',
+        how: '**股息率越高越便宜**，高股息行业（银行、公用事业等）在市场低迷时更抗跌。' },
+      { term: '行业资金流', what: '各股主力净流入（东方财富）按申万行业求和，可看当日、近 5 日、近 10 日，列出净流入、净流出最多的各 10 个行业。**只有最近一个交易日能取到**。',
+        how: '与热力图配合看：**涨且资金净流入是真强势**；涨而资金净流出，可能是拉高出货。' },
     ],
   },
   {
@@ -140,6 +180,87 @@ function parts(text: string): { t: string; b: boolean }[] {
 }
 const plain = (text: string) => text.replace(/\*\*/g, '')
 
+// 行情统计一览: every card on the 行情 page, by category and group in the page's order.
+interface StatItem { item: string; what: string; how: string; purpose: string; key?: boolean }   // key: look at it first
+interface StatGroup { group: string; items: StatItem[] }
+interface StatCategory { category: string; groups: StatGroup[] }
+const STATS: StatCategory[] = [
+  {
+    category: '一、市场全景', groups: [
+      { group: '今日涨跌', items: [
+        { item: '涨跌分布', what: '全部股票按涨跌幅分 11 档的家数（跌 >10% … 涨 >10%）', how: '涨的多但集中在 0–3% 是**弱反弹**；两端（>7%）家数多说明**分化剧烈**', purpose: '判断今天是**普涨普跌还是结构行情**' },
+        { item: '赚钱效应', key: true, what: '每天全部股票涨跌幅的**中位数**', how: '指数涨而中位数为负，说明**多数人在亏钱**', purpose: '看普通持股者的真实盈亏' },
+        { item: '历史涨跌趋势', what: '每天上涨、下跌、平盘家数随时间变化', how: '上涨家数持续多于下跌家数是普涨，反之普跌', purpose: '看涨跌面的持续性' },
+      ] },
+      { group: '指数与量能', items: [
+        { item: '指数与腾落线', what: '7 个指数与个股中位数的区间累计涨跌；腾落线为每天「上涨 − 下跌家数」累加', how: '指数涨、腾落线跌，是**少数权重股在撑**，需警惕', purpose: '识别**指数失真**' },
+        { item: '市场成交额', key: true, what: '沪深京全部 A 股每天成交额之和', how: '**放量上涨**说明增量资金入场；**缩量上涨难持续**', purpose: '判断资金热度与行情能否持续' },
+      ] },
+      { group: '资金与风险', items: [
+        { item: '市场资金流', what: '全市场主力（超大单 + 大单）净流入，及超大单、大单、中单、小单分项（近 120 日）', how: '**主力流出而小单流入常是机构派发、散户接盘**；主力由流出转流入是回流信号', purpose: '看大资金的进出方向' },
+        { item: '两融余额', what: '沪深融资融券未还余额及每日变化（次日公布）', how: '余额持续增加是**加杠杆做多**；单日大幅减少常是**被动平仓**', purpose: '看杠杆资金的进出' },
+        { item: '市场波动率（QVIX）', what: '50ETF 期权隐含波动率，中国版恐慌指数，及 2015 年以来分位', how: '**急升是恐慌，常在急跌末段**；长期极低说明过度平静，警惕突变', purpose: '衡量**市场恐慌程度**' },
+        { item: '限售解禁', what: '未来 30 天每天的解禁市值，及解禁市值最大的个股和占流通市值比例', how: '**解禁市值大、占流通比例高的个股**解禁前后易承压', purpose: '预判**筹码供给压力**' },
+      ] },
+    ],
+  },
+  {
+    category: '二、短线情绪', groups: [
+      { group: '情绪温度', items: [
+        { item: '情绪综合分', key: true, what: '涨跌比、涨停跌停比、封板率、涨停溢价、晋级率、空间板六项各折算 0–100 后平均', how: '**≥80 过热、<20 冰点**；冰点后回升常是短线机会', purpose: '**一个数看懂当天短线情绪**' },
+      ] },
+      { group: '涨停板', items: [
+        { item: '涨停、跌停与炸板', what: '收盘涨停、跌停的股票明细，盘中触及涨停却没封住的炸板，及炸板率', how: '炸板率 **<20% 情绪好、>40% 转弱**；一字板、早封板更强', purpose: '看当天打板资金的强弱' },
+        { item: '连板天梯', what: '涨停股按连续涨停天数分层', how: '**梯队完整**说明接力顺畅；只剩首板说明没有持续性', purpose: '看短线接力的结构' },
+      ] },
+      { group: '主线题材', items: [
+        { item: '主线题材', what: '涨停原因（同花顺）按「+」拆成题材，统计近 3/5/10 日每天的涨停家数', how: '**连续多日都有涨停的题材是主线**；只出现一天多为一日游', purpose: '找出**当前市场主线**' },
+      ] },
+      { group: '情绪指标', items: [
+        { item: '涨停溢价', key: true, what: '昨日涨停股今天的平均涨跌幅和上涨占比', how: '**为正追涨停能赚钱**；持续为负说明打板亏钱、情绪退潮', purpose: '短线情绪**最直接的温度计**' },
+        { item: '连板晋级率', what: '昨日涨停股今天再涨停的比例（首板→2板、连板整体等）', how: '晋级率高说明接力积极；**高位晋级率骤降常是见顶信号**', purpose: '看接力资金的强度' },
+        { item: '空间板高度', key: true, what: '每天最高连板的板数和连板家数', how: '**高度抬升是发酵期，骤降是退潮期**，2–3 板徘徊是冰点', purpose: '判断**短线情绪周期**所处阶段' },
+        { item: '涨停跌停趋势', what: '每天涨停、跌停、炸板家数随时间变化', how: '涨停持续多于跌停说明情绪偏暖；跌停激增是恐慌', purpose: '看短线情绪的历史走势' },
+      ] },
+      { group: '龙虎榜', items: [
+        { item: '龙虎榜', what: '当日异动上榜股票、席位买卖金额、机构净买及上榜原因', how: '**机构大额净买多为认可**，游资集中买入多为短线炒作', purpose: '看**主力席位在买什么**' },
+      ] },
+    ],
+  },
+  {
+    category: '三、板块与资金', groups: [
+      { group: '行业表现', items: [
+        { item: '行业涨跌榜', what: '申万一级/二级行业的平均、中位涨幅，5 日涨幅，上涨占比，成交占比，领涨股', how: '**上涨占比 >70% 是真正的板块行情**；平均远高于中位说明少数股拉动', purpose: '找出当天最强、最弱的行业' },
+        { item: '行业资金流', what: '主力净流入按申万行业求和，当日 / 5日 / 10日的净流入、净流出前 10（仅最近一个交易日）', how: '**多日持续净流入比单日可靠**；涨而净流出可能是拉高出货', purpose: '看资金流向哪些行业' },
+      ] },
+      { group: '行业轮动', items: [
+        { item: '行业轮动热力图', key: true, what: '31 个申万一级行业近 10/20 日每天的涨跌幅，按区间累计排序', how: '**连续变红是资金流入方向**；一行转绿、另一行转红是轮动切换', purpose: '把握**板块轮动节奏**' },
+        { item: '行业拥挤度', what: '各行业近 5 日平均成交额占比和换手率，在 2021 年以来历史中的分位，两者平均为拥挤度', how: '**≥80 拥挤，易快速回撤**，尤其是已大涨的行业；≤20 冷清，关注度低', purpose: '识别**交易过热的板块风险**' },
+      ] },
+    ],
+  },
+  {
+    category: '四、市场宽度与风格', groups: [
+      { group: '市场宽度', items: [
+        { item: '新高新低', key: true, what: '收盘创 60 日、250 日新高、新低的家数（复权价）', how: '新高多于新低是走强；**指数新高而新高家数减少是上涨面收窄**', purpose: '确认趋势的广度' },
+        { item: '均线上方占比', what: '站上 20 日、60 日均线的股票占比', how: '**>80% 偏热，<20% 超跌**', purpose: '判断市场整体超买超卖' },
+      ] },
+      { group: '风格', items: [
+        { item: '大小盘风格', what: '按流通市值分大盘、中盘、小盘、微盘四档，各档中位涨幅的累计', how: '**哪条线在上，资金就偏好哪类股票**', purpose: '判断**大盘还是小盘占优**' },
+      ] },
+    ],
+  },
+  {
+    category: '五、估值', groups: [
+      { group: '估值', items: [
+        { item: '全市场估值', what: '申万A指 2005 年至今的市盈率、市净率、股息率及分位', how: '**分位越低越便宜**（股息率相反）；<20% 常是长期布局区域', purpose: '判断市场的**长期位置**' },
+        { item: '股债性价比', key: true, what: '盈利收益率（1 ÷ 市盈率）减 10 年国债收益率', how: '**分位越高股票相对债券越便宜**，≥80% 多对应底部区域', purpose: '比较**股票与债券谁更划算**' },
+        { item: '行业估值', what: '申万一级行业的市盈率、市净率、股息率及 2021 年以来分位', how: '**看分位而非绝对值**；≤20% 偏便宜，≥80% 偏贵', purpose: '找出相对便宜或过热的行业' },
+      ] },
+    ],
+  },
+]
+
 const q = ref('')
 const shown = computed(() => {
   const k = q.value.trim().toLowerCase()
@@ -149,7 +270,22 @@ const shown = computed(() => {
     terms: s.terms.filter((t) => plain(`${t.term} ${t.what} ${[t.how ?? ''].flat().join(' ')}`).toLowerCase().includes(k)),
   })).filter((s) => s.terms.length)
 })
-const count = computed(() => shown.value.reduce((a, s) => a + s.terms.length, 0))
+const count = computed(() => shown.value.reduce((a, s) => a + s.terms.length, 0) + statRows.value.length)
+
+// The table's rows (filtered by the search), with how many rows each category and group cell spans.
+const statRows = computed(() => {
+  const k = q.value.trim().toLowerCase()
+  const rows: (StatItem & { category: string; group: string; catSpan: number; grpSpan: number })[] = []
+  for (const c of STATS) {
+    const catStart = rows.length
+    for (const g of c.groups) {
+      const items = g.items.filter((i) => !k || plain(`${c.category} ${g.group} ${i.item} ${i.what} ${i.how} ${i.purpose}`).toLowerCase().includes(k))
+      items.forEach((i, n) => rows.push({ ...i, category: c.category, group: g.group, catSpan: 0, grpSpan: n === 0 ? items.length : 0 }))
+    }
+    if (rows.length > catStart) rows[catStart].catSpan = rows.length - catStart
+  }
+  return rows
+})
 
 function jump(id: string) {
   document.getElementById(`g-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
@@ -161,16 +297,40 @@ function jump(id: string) {
     <div class="card head">
       <div>
         <h2>指标说明</h2>
-        <p class="muted small">本项目各页面用到的名词是什么、怎么看。</p>
+        <p class="muted small">行情页统计一览，以及本项目各页面用到的名词是什么、怎么看。</p>
       </div>
       <InputText v-model="q" class="search" placeholder="搜索名词，如 炸板、腾落线" size="small" />
     </div>
     <nav class="toc">
+      <button v-if="statRows.length" type="button" class="chip" @click="jump('stats')">
+        行情统计一览 <span class="muted">{{ statRows.length }}</span>
+      </button>
       <button v-for="s in shown" :key="s.id" type="button" class="chip" @click="jump(s.id)">
         {{ s.title }} <span class="muted">{{ s.terms.length }}</span>
       </button>
     </nav>
     <p v-if="!count" class="muted">没有找到「{{ q }}」相关的名词。</p>
+    <section v-if="statRows.length" id="g-stats" class="card sec">
+      <h3>行情统计一览</h3>
+      <p class="muted small intro">行情页下方的全部统计，按页面上的类别、分组和顺序排列，越靠前越重要。<span class="key">红色</span>为每个类别中最该重点看的项目，时间有限时先看它们。各名词的详细解释见下方各节。</p>
+      <div class="stat-wrap">
+        <table class="stat-table">
+          <thead>
+            <tr><th>类别</th><th>分组</th><th>统计项</th><th>统计什么</th><th>怎么看</th><th>用途</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="r in statRows" :key="`${r.group}-${r.item}`">
+              <td v-if="r.catSpan" :rowspan="r.catSpan" class="merged cat">{{ r.category }}</td>
+              <td v-if="r.grpSpan" :rowspan="r.grpSpan" class="merged">{{ r.group }}</td>
+              <td class="item" :class="{ key: r.key }">{{ r.item }}<span v-if="r.key" class="star">重点</span></td>
+              <td><template v-for="(x, j) in parts(r.what)" :key="j"><b v-if="x.b">{{ x.t }}</b><template v-else>{{ x.t }}</template></template></td>
+              <td><template v-for="(x, j) in parts(r.how)" :key="j"><b v-if="x.b">{{ x.t }}</b><template v-else>{{ x.t }}</template></template></td>
+              <td><template v-for="(x, j) in parts(r.purpose)" :key="j"><b v-if="x.b">{{ x.t }}</b><template v-else>{{ x.t }}</template></template></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
     <section v-for="s in shown" :id="`g-${s.id}`" :key="s.id" class="card sec">
       <h3>{{ s.title }}</h3>
       <p v-if="s.intro" class="muted small intro"><template v-for="(x, j) in parts(s.intro)" :key="j"><b v-if="x.b">{{ x.t }}</b><template v-else>{{ x.t }}</template></template></p>
@@ -192,7 +352,16 @@ function jump(id: string) {
 </template>
 
 <style scoped>
-.guide { max-width: 980px; }
+.guide { max-width: 1240px; }
+.stat-wrap { overflow-x: auto; }
+.stat-table { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 1.6; min-width: 900px; }
+.stat-table th, .stat-table td { border: 1px solid var(--border); padding: 7px 10px; vertical-align: middle; text-align: left; }
+.stat-table th { background: #f6f7f9; font-weight: 600; white-space: nowrap; }
+.stat-table .merged { text-align: center; font-weight: 600; white-space: nowrap; background: #fafbfc; }
+.stat-table .item { font-weight: 600; white-space: nowrap; }
+.stat-table b { font-weight: 600; color: #1f2933; }
+.stat-table .item.key, .intro .key { color: var(--up); }
+.star { margin-left: 6px; font-size: 11px; font-weight: 500; padding: 0 5px; border-radius: 4px; background: #fdecec; color: var(--up); }
 .head { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 h2 { margin: 0; font-size: 18px; }
 h3 { margin: 0 0 4px; font-size: 16px; }

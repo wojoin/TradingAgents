@@ -875,3 +875,333 @@ def test_limit_details_from_ths_pages_then_eastmoney(monkeypatch, tmp_path):
                                                             "last_limit_down_time": "1794898483"}]}})
     d = L.fetch_ths("2026-11-17", get=get_down, side="down")
     assert seen[0].endswith("lower_limit_pool") and d.iloc[0][["first_time", "last_time"]].tolist() == ["14:32:10", "14:54:43"]
+
+
+def test_breadth_counts_new_highs_moving_averages_size_bands_and_limit_follow_through(monkeypatch, tmp_path):
+    import pandas as pd
+
+    from web.server import breadth, market
+
+    days = [d.strftime("%Y-%m-%d") for d in pd.bdate_range("2026-01-05", periods=65)]
+    base_days, last = days[:-1], days[-1]
+    # A rises 1% a day, B falls 1% a day, C stays put; D is an ST stock (left out of the size bands).
+    moves = {"600001": 1.0, "600002": -1.0, "600003": 0.0, "600004": 0.5}
+    names = {"600001": "甲", "600002": "乙", "600003": "丙", "600004": "*ST丁"}
+    panel, close = [], dict.fromkeys(moves, 10.0)
+    for d in base_days:
+        for c, m in moves.items():
+            close[c] *= 1 + m / 100
+            panel.append({"date": d, "code": c, "name": names[c], "pct_chg": m, "close": close[c]})
+    xs = pd.DataFrame({"code": list(moves), "name": list(names.values()), "pct_chg": list(moves.values()),
+                       "close": [close[c] * (1 + m / 100) for c, m in moves.items()],
+                       "float_mv": [300.0, 200.0, 100.0, 1000.0]})
+    # Limit-ups: A on the last four days (a run), B the day before the last.
+    events = pd.DataFrame([{"date": d, "code": "600001", "kind": "up"} for d in days[-4:]]
+                          + [{"date": days[-2], "code": "600002", "kind": "up"}])
+    monkeypatch.setattr(breadth, "_base_panel", lambda: pd.DataFrame(panel))
+    monkeypatch.setattr(market, "base_through_day", lambda: base_days[-1])
+    monkeypatch.setattr(market, "available_dates", lambda: [last])
+    monkeypatch.setattr(market, "_read_xs", lambda day: xs)
+    stats = pd.DataFrame({"date": days, "up": 3, "down": 1, "limit_up": 1, "limit_down": 0, "broken": 1})
+    monkeypatch.setattr(market, "_span_stats", lambda span: (stats, events))
+    monkeypatch.setattr(market, "_days_on_record", lambda end: days)
+    monkeypatch.setattr(breadth, "MIN_STOCKS", 1)
+    monkeypatch.setattr(breadth, "MIN_BAND", 1)
+    monkeypatch.setattr(breadth, "SIZE_BANDS", (("大盘", 0, 1), ("微盘", -1, None)))
+    monkeypatch.setattr(breadth, "BAND_RULES", {"大盘": "最大 1 只", "微盘": "最小 1 只"})
+    breadth.invalidate()
+
+    b = breadth.breadth(None, "60d")
+    day = b["days"][-1]
+    assert b["end"] == last and len(b["days"]) == 60
+    assert (day["nh60"], day["nl60"]) == (2, 1), "A and the ST stock make 60-day highs, B a low; C neither"
+    assert day["nh250"] is None, "not enough history for 250 days"
+    assert day["ma20"] == pytest.approx(50.0) and day["ma60"] == pytest.approx(50.0), "A and D above, B and C not"
+    # By float value without the ST stock: A is the largest, C the smallest.
+    assert (day["size_大盘"], day["size_微盘"]) == (1.0, 0.0)
+    # Yesterday A (3 in a row) and B (首板) closed at the limit; today A does again, B does not.
+    assert (day["prem_n"], day["prem_avg"], day["prem_up"]) == (2, 0.0, 50.0)
+    assert (day["promo_1"], day["promo_3"], day["promo_multi"], day["promo_all"]) == (0.0, 100.0, 100.0, 50.0)
+    assert day["promo_2"] is None, "no 2-in-a-row stock yesterday"
+    assert b["days"][0]["prem_n"] == 0, "no limit-up the day before"
+    assert (day["height"], day["multi_n"]) == (4, 1), "A on its fourth limit-up in a row"
+    # 情绪综合分: 涨跌比 75, 涨停跌停比 100, 封板率 50, 溢价 0% -> 50, 晋级率 50% -> 100 (capped), 4 板 -> 3/7.
+    parts = {k: day[f"m_{k}"] for k in ("updown", "limit", "seal", "prem", "promo", "height")}
+    assert parts == pytest.approx({"updown": 75, "limit": 100, "seal": 50, "prem": 50, "promo": 100, "height": 300 / 7}, abs=0.01)
+    assert day["mood"] == pytest.approx(sum(parts.values()) / 6, abs=0.01)
+    with pytest.raises(ValueError):
+        breadth.breadth(None, "2y")
+    client = TestClient(create_app(RunManager(runner=lambda r, e: None), reports_root=tmp_path, watchlist_path=tmp_path / "w.json"))
+    assert client.get("/api/market/breadth?range=60d").json()["days"][-1]["nh60"] == 2
+    assert client.get("/api/market/breadth?range=bad").status_code == 400
+    breadth.invalidate()
+
+
+def test_sectors_heat_map_valuation_ranks_and_the_market_series(monkeypatch, tmp_path):
+    import pandas as pd
+
+    from web.server import market, sectors
+
+    days = [d.strftime("%Y-%m-%d") for d in pd.bdate_range("2026-10-01", periods=25)]
+    rows = []
+    for i, d in enumerate(days):
+        # 银行 rises 1% a day, its PE climbing (today the highest); 电子 falls 1%, PE falling.
+        rows.append({"指数代码": "801780", "指数名称": "银行", "发布日期": d, "涨跌幅": 1.0, "市盈率": 5 + i * 0.1,
+                     "市净率": 0.5, "股息率": 4.5, "成交额占比": 3.0})
+        rows.append({"指数代码": "801080", "指数名称": "电子", "发布日期": d, "涨跌幅": -1.0, "市盈率": 60 - i,
+                     "市净率": 5.0, "股息率": 0.5, "成交额占比": 12.0})
+    rows.append({"指数代码": "801230", "指数名称": "综合", "发布日期": days[0], "涨跌幅": 0.0, "市盈率": 1,
+                 "市净率": 1, "股息率": 1, "成交额占比": 0.1})            # gone from today's classification
+    mkt = pd.DataFrame({"日期": days, "市盈率": [15.0 + i * 0.1 for i in range(25)], "市净率": 1.7, "股息率": 1.9})
+    fetched = []
+
+    def fetch(name):
+        fetched.append(name)
+        return pd.DataFrame(rows) if name == "sw_daily" else mkt
+    monkeypatch.setattr(sectors, "_fetch", fetch)
+    monkeypatch.setattr(market, "last_closed_day", lambda: days[-1])
+    from web.server import extras
+    # The bond yield is published for every other day only: each day takes the last one before it.
+    monkeypatch.setattr(extras, "_fetch_bond", lambda: pd.DataFrame({"日期": days[::2], "中国国债收益率10年": 2.0}))
+    extras.invalidate()
+    sectors.invalidate()
+
+    r = sectors.sectors(None, 20)
+    assert r["as_of"] == days[-1] and r["dates"] == days[-20:]
+    assert [x["name"] for x in r["industries"]] == ["银行", "电子"], "by the change over the window; 综合 left out"
+    bank = r["industries"][0]
+    assert bank["cum"] == pytest.approx((1.01 ** 20 - 1) * 100, abs=0.01)
+    assert bank["cum5"] == pytest.approx((1.01 ** 5 - 1) * 100, abs=0.01)
+    assert len(bank["pct"]) == 20 and bank["pe_rank"] == 100.0 and r["industries"][1]["pe_rank"] == pytest.approx(4.0)
+    assert sectors.sectors(days[9], 10)["dates"] == days[:10]
+    with pytest.raises(ValueError):
+        sectors.sectors(None, 30)
+
+    v = sectors.valuation(days[4])
+    assert v["as_of"] == days[4] and [d["pe"] for d in v["days"]] == [15.0, 15.1, 15.2, 15.3, 15.4]
+    assert v["days"][1]["y10"] == 2.0 and v["days"][0]["erp"] == pytest.approx(100 / 15 - 2, abs=1e-3), "股债性价比"
+    assert fetched == ["sw_daily", "sw_market"], "once per series per closed day"
+
+    client = TestClient(create_app(RunManager(runner=lambda r, e: None), reports_root=tmp_path, watchlist_path=tmp_path / "w.json"))
+    assert client.get("/api/market/sectors?days=10").json()["industries"][0]["name"] == "银行"
+    assert client.get("/api/market/sectors?days=7").status_code == 400
+    assert len(client.get("/api/market/valuation").json()["days"]) == 25
+    sectors.invalidate()
+    extras.invalidate()
+
+
+def test_sectors_fall_back_to_the_disk_copy(monkeypatch, tmp_path):
+    import pandas as pd
+
+    from tradingagents.dataflows.vendors.akshare import store
+    from web.server import market, sectors
+
+    def down(name):
+        raise ConnectionError("申万 down")
+    monkeypatch.setattr(sectors, "_fetch", down)
+    monkeypatch.setattr(market, "last_closed_day", lambda: "2026-11-17")
+    sectors.invalidate()
+    monkeypatch.setattr(store, "ts_path", lambda name: __import__("pathlib").Path("/nonexistent") / f"{name}.parquet")
+    with pytest.raises(LookupError):
+        sectors.valuation()
+    sectors.invalidate()
+
+    from web.server import extras
+    monkeypatch.setattr(extras, "_fetch_bond", lambda: pd.DataFrame({"日期": ["2026-11-13"], "中国国债收益率10年": [1.6]}))
+    extras.invalidate()
+    # With a copy on disk: that copy, and a note saying so.
+    monkeypatch.setattr(store, "ts_path", lambda name: tmp_path / f"{name}.parquet")
+    pd.DataFrame({"日期": ["2026-11-13"], "市盈率": [15.9], "市净率": [1.78], "股息率": [1.8]}).to_parquet(tmp_path / "sw_market.parquet")
+    v = sectors.valuation()
+    assert v["days"][-1]["pe"] == 15.9 and "使用本地数据" in v["note"]
+    sectors.invalidate()
+
+
+
+def test_margin_joins_the_exchanges_and_tops_up_the_history(monkeypatch, tmp_path):
+    import pandas as pd
+
+    from web.server import extras, market
+
+    days = ["2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13", "2026-11-16"]
+    monkeypatch.setattr(market, "last_closed_day", lambda: days[-1])
+    monkeypatch.setattr(market, "trading_days", lambda: days)
+
+    def hist(ex):     # the long history ends on 11-11
+        v = 100.0 if ex == "margin_sh" else 50.0
+        return pd.DataFrame({"date": days[:2], "total": [v, v + 1], "fin": [v - 1, v], "fin_buy": [1.0, 1.0]})
+    asked = []
+
+    def sse(start, end):
+        asked.append(("sse", start, end))
+        return pd.DataFrame({"date": days[2:], "total": [102.0, 103.0, 104.0], "fin": 1.0, "fin_buy": 1.0})
+
+    def szse(day):
+        asked.append(("szse", day))
+        if day == days[-1]:              # not published yet
+            return pd.DataFrame(columns=extras._MARGIN_COLS)
+        return pd.DataFrame([{"date": day, "total": 60.0, "fin": 1.0, "fin_buy": 1.0}])
+    extras.invalidate()
+    m = extras.margin(None, "60d", build=lambda: extras._build_margin(hist, sse, szse))
+    assert ("sse", "2026-11-12", "2026-11-16") in asked and ("szse", "2026-11-16") in asked
+    assert m["as_of"] == "2026-11-13", "a day both exchanges have published"
+    assert [d["total"] for d in m["days"]] == [150, 152, 162, 163]
+    assert m["days"][-1]["chg"] == 1 and m["days"][0]["chg"] is None
+    with pytest.raises(ValueError):
+        extras.margin(None, "5y")
+    extras.invalidate()
+
+
+def test_themes_count_the_limit_up_reasons_by_day(monkeypatch):
+    import pandas as pd
+
+    from web.server import extras, market
+
+    days = ["2026-11-12", "2026-11-13", "2026-11-16", "2026-11-17"]
+    monkeypatch.setattr(market, "_days_on_record", lambda end: days)
+    monkeypatch.setattr(market, "_names", lambda: pd.DataFrame({"code": ["000001", "000002", "000003"],
+                                                                 "name": ["甲", "乙", "丙"]}))
+    reasons = {
+        "2026-11-13": {"000001": "AI应用+国资"},
+        "2026-11-16": {"000001": "AI应用+国资", "000002": "商业航天"},
+        "2026-11-17": {"000001": "AI应用+国资", "000002": "商业航天＋AI应用", "000003": None},
+    }
+
+    def details(d):
+        r = reasons.get(d)
+        return None if r is None else pd.DataFrame({"code": list(r), "reason": list(r.values())})
+    t = extras.themes("2026-11-17", 3, details=details)
+    assert t["dates"] == days[-3:] and t["have"] == days[-3:]
+    top = t["themes"][0]
+    assert (top["name"], top["today"], top["counts"], top["days_on"]) == ("AI应用", 2, [1, 1, 2], 3)
+    assert [x["name"] for x in t["themes"]] == ["AI应用", "国资", "商业航天"], "today's count, then over the span"
+    assert [s["name"] for s in top["stocks"]] == ["甲", "乙"]
+    assert extras.split_reason("A＋B+ C") == ["A", "B", "C"] and extras.split_reason(None) == []
+    with pytest.raises(ValueError):
+        extras.themes(None, 7, details=details)
+
+
+
+def test_qvix_and_the_market_flow(monkeypatch):
+    import pandas as pd
+
+    from web.server import extras, market
+
+    days = [d.strftime("%Y-%m-%d") for d in pd.bdate_range("2026-08-03", periods=80)]
+    monkeypatch.setattr(market, "last_closed_day", lambda: days[-1])
+    monkeypatch.setattr(extras.store, "cached", lambda name, fn, policy="daily", refresh=False: fn())
+    extras.invalidate()
+    q = extras.qvix(None, "60d", fetch=lambda: pd.DataFrame({"date": days, "close": [10.0 + i % 20 for i in range(80)],
+                                                              "high": 30.0}))
+    assert q["as_of"] == days[-1] and len(q["days"]) == 60 and q["since"] == days[0]
+    assert q["rank"] == pytest.approx(100.0), "the last close (29) is the highest so far"
+    f = extras.market_flow(None, "60d", fetch=lambda: pd.DataFrame({
+        "日期": days, "主力净流入-净额": -1e9, "超大单净流入-净额": -4e8, "大单净流入-净额": -6e8,
+        "中单净流入-净额": 2e8, "小单净流入-净额": 8e8, "主力净流入-净占比": -1.5}))
+    assert len(f["days"]) == 60 and f["days"][-1] == {"date": days[-1], "main": -1e9, "super": -4e8, "large": -6e8,
+                                                        "mid": 2e8, "small": 8e8, "main_pct": -1.5}
+    with pytest.raises(ValueError):
+        extras.qvix(None, "9y")
+    extras.invalidate()
+
+
+def test_industry_flow_sums_by_shenwan_industry(monkeypatch):
+    import pandas as pd
+
+    from web.server import extras, market
+
+    monkeypatch.setattr(market, "_days_on_record", lambda end: ["2026-11-17"])
+    monkeypatch.setattr(market, "last_closed_day", lambda: "2026-11-17")
+    monkeypatch.setattr(market, "industries", lambda: pd.DataFrame(
+        {"sw1": ["电子", "电子", "银行"], "sw2": ["半导体", "消费电子", "股份制银行Ⅱ"]}, index=["000001", "000002", "000003"]))
+    flows = pd.Series([3e8, -1e8, -5e8, 7e8], index=["000001", "000002", "000003", "999999"])
+    got = extras.industry_flow(None, "5d", stock_flow=lambda day, span: flows)
+    assert got["available"] and got["total"] == 4e8
+    assert got["sw1"] == [{"name": "电子", "flow": 2e8}, {"name": "银行", "flow": -5e8}], "a stock without an industry left out"
+    assert got["sw2"][0] == {"name": "电子-半导体", "flow": 3e8}
+    none = extras.industry_flow(None, "10d", stock_flow=lambda day, span: None)
+    assert not none["available"] and "只有最近一个交易日" in none["note"]
+    with pytest.raises(ValueError):
+        extras.industry_flow(None, "3d", stock_flow=lambda day, span: flows)
+
+
+def test_releases_and_the_lhb(monkeypatch, tmp_path):
+    import pandas as pd
+
+    from web.server import extras, market
+
+    monkeypatch.setattr(market, "last_closed_day", lambda: "2026-11-17")
+    monkeypatch.setattr(market, "_days_on_record", lambda end: ["2026-11-17"])
+    extras.invalidate()
+    summary = pd.DataFrame({"解禁时间": ["2026-11-18", "2026-11-20"], "当日解禁股票家数": [2, 1], "实际解禁市值": [3e9, 1e9]})
+    detail = pd.DataFrame({"股票代码": ["688653", "601328"], "股票简称": ["康希通信", "交通银行"],
+                           "解禁时间": ["2026-11-18", "2026-11-20"], "限售股类型": ["首发原股东限售股份", "其他类型"],
+                           "实际解禁市值": [1e9, 2e9], "占解禁前流通市值比例": [0.25, 0.5]})
+    r = extras.releases("2026-11-17", summary=lambda a, b: summary, detail=lambda a, b: detail)
+    assert (r["end"], r["count"], r["total"]) == ("2026-12-17", 3, 4e9)
+    assert [x["name"] for x in r["stocks"]] == ["交通银行", "康希通信"] and r["stocks"][0]["float_share"] == 50.0
+
+    monkeypatch.setattr(extras, "_lhb_path", lambda day: tmp_path / f"{day}.parquet")
+    monkeypatch.setattr(extras.store, "is_intraday", lambda: False)     # after the close: kept on disk
+    # A convertible bond (no 解读) is on the list too, and left out.
+    d = pd.DataFrame({"代码": ["000521", "000521", "000011", "113001"], "名称": ["长虹美菱", "长虹美菱", "深物业A", "某某转债"],
+                      "收盘价": [4.74, 4.74, 6.94, 130.0], "涨跌幅": [9.98, 9.98, -9.64, 20.0],
+                      "龙虎榜净买额": [8.6e7, 8.6e7, 3.1e7, 9e9], "龙虎榜买入额": [1.2e8, 1.2e8, 1.1e8, 1e10],
+                      "龙虎榜卖出额": [3.9e7, 3.9e7, 8.2e7, 1e9], "净买额占总成交比": [24.0, 24.0, 4.1, 50.0],
+                      "换手率": [5.7, 5.7, 9.5, 300.0], "解读": ["普通席位买入", "普通席位买入", None, None],
+                      "上榜原因": ["日涨幅偏离值达7%", "连续三日涨幅偏离20%", "连续三日跌幅偏离20%", "转债异动"]})
+    j = pd.DataFrame({"代码": ["000011"], "买方机构数": [0], "卖方机构数": [1], "机构买入净额": [-5e7]})
+    lb = extras.lhb(None, detail=lambda k: d, inst=lambda k: j)
+    assert lb["count"] == 2 and [x["code"] for x in lb["stocks"]] == ["000521", "000011"], "one row a stock, by net buying"
+    assert lb["stocks"][0]["reason"] == "日涨幅偏离值达7%；连续三日涨幅偏离20%"
+    assert (lb["inst_net"], lb["inst_count"]) == (-5e7, 1) and lb["stocks"][0]["inst_net"] is None
+    assert lb["stocks"][1]["note"] == "", "no 解读: empty, not NaN (which JSON cannot carry)"
+    assert extras.lhb(None, detail=None, inst=None)["count"] == 2, "a closed day read back from disk"
+    (tmp_path / "2026-11-17.parquet").unlink()
+    assert not extras.lhb(None, detail=lambda k: pd.DataFrame(), inst=None)["available"], "not published yet"
+    extras.invalidate()
+
+
+def test_the_new_market_endpoints_pass_their_day_through(monkeypatch, tmp_path):
+    # A Query shared between parameters serves only the first name: each must get its own.
+    from web.server import extras
+
+    for name in ("lhb", "releases"):
+        monkeypatch.setattr(extras, name, lambda date=None: {"got": date})
+    monkeypatch.setattr(extras, "industry_flow", lambda date=None, span="1d": {"got": date})
+    for name in ("qvix", "market_flow", "margin"):
+        monkeypatch.setattr(extras, name, lambda end=None, rng="1y": {"got": end})
+    client = TestClient(create_app(RunManager(runner=lambda r, e: None), reports_root=tmp_path, watchlist_path=tmp_path / "w.json"))
+    for url in ("lhb?date=", "releases?date=", "flow/industry?span=5d&date=", "qvix?end=", "flow?end=", "margin?end="):
+        assert client.get(f"/api/market/{url}2026-11-13").json() == {"got": "2026-11-13"}, url
+    assert client.get("/api/market/lhb?date=11-13").status_code == 422
+
+
+def test_industry_crowding_ranks_turnover_share_and_rate_against_their_history(monkeypatch, tmp_path):
+    import pandas as pd
+
+    from web.server import market, sectors
+
+    days = [d.strftime("%Y-%m-%d") for d in pd.bdate_range("2026-09-01", periods=40)]
+    rows = []
+    for i, d in enumerate(days):
+        # 传媒's share and turnover climb to their highest; 银行's sink to their lowest.
+        rows.append({"指数代码": "801760", "指数名称": "传媒", "发布日期": d, "涨跌幅": 1.0,
+                     "成交额占比": 1 + i * 0.1, "换手率": 2 + i * 0.1})
+        rows.append({"指数代码": "801780", "指数名称": "银行", "发布日期": d, "涨跌幅": -1.0,
+                     "成交额占比": 5 - i * 0.1, "换手率": 3 - i * 0.05})
+    monkeypatch.setattr(sectors, "_fetch", lambda name: pd.DataFrame(rows))
+    monkeypatch.setattr(market, "last_closed_day", lambda: days[-1])
+    sectors.invalidate()
+    c = sectors.crowding(None)
+    assert c["as_of"] == days[-1] and [x["name"] for x in c["industries"]] == ["传媒", "银行"]
+    media, bank = c["industries"]
+    assert (media["share_rank"], media["turnover_rank"], media["crowd"]) == (100.0, 100.0, 100.0)
+    assert bank["crowd"] == pytest.approx(100 / 36, abs=0.1), "the lowest of 36 five-day averages"
+    assert media["share5"] == pytest.approx(sum(1 + i * 0.1 for i in range(35, 40)) / 5, abs=0.01)
+    assert media["share5_20d"] == pytest.approx(sum(1 + i * 0.1 for i in range(15, 20)) / 5, abs=0.01)
+    assert media["cum20"] == pytest.approx((1.01 ** 20 - 1) * 100, abs=0.01)
+    assert sectors.crowding(days[20])["as_of"] == days[20]
+    client = TestClient(create_app(RunManager(runner=lambda r, e: None), reports_root=tmp_path, watchlist_path=tmp_path / "w.json"))
+    assert client.get(f"/api/market/crowding?end={days[-1]}").json()["industries"][0]["name"] == "传媒"
+    sectors.invalidate()

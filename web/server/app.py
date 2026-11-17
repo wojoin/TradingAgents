@@ -5,6 +5,17 @@
   GET  /api/market/calendar             the trading days a date can be picked from (to the last closed one)
   GET  /api/market/stats               ?range=1d|60d|6m|1y&end=: rises, falls and amount traded, day by day
   GET  /api/market/limits              ?date=: the day's limit-ups by run length (连板), 炸板 and limit-downs
+  GET  /api/market/sectors             ?days=10|20&end=: 申万一级 industries' heat map and valuation
+  GET  /api/market/crowding            ?end=: 行业拥挤度, the industries' turnover share and rate against their history
+  GET  /api/market/valuation           ?end=: 申万A指's PE, PB and dividend yield since 2005
+  GET  /api/market/margin              ?range=&end=: 两融余额 (Shanghai and Shenzhen) each trading day
+  GET  /api/market/themes              ?days=3|5|10&date=: the limit-ups' themes (同花顺 涨停原因) by day
+  GET  /api/market/qvix                ?range=&end=: the 50ETF volatility index (China's VIX)
+  GET  /api/market/flow                ?range=&end=: the market's main-force flow (last 120 days)
+  GET  /api/market/flow/industry       ?span=1d|5d|10d&date=: main-force flow by 申万 industry
+  GET  /api/market/releases            ?date=: shares coming off lock-up in the next 30 days
+  GET  /api/market/lhb                 ?date=: the day's 龙虎榜 with the institutions' buying
+  GET  /api/market/breadth             ?range=&end=: 涨停溢价 and 晋级率, size styles, new highs and lows, share above MAs
   GET/POST /api/market/sync             the snapshot sync for days not on disk yet: its status, or start it
   GET  /api/market/index/{code}/members today's constituents of an index (000300: 沪深300)
   GET  /api/watchlist                   the watchlist's groups and their stocks' rows (?rows=0: groups only)
@@ -42,7 +53,15 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from web.server import market, reports, settings as run_settings, watchlist
+from web.server import (
+    breadth,
+    extras,
+    market,
+    reports,
+    sectors,
+    settings as run_settings,
+    watchlist,
+)
 from web.server.runs import RunManager
 from web.server.sync_job import SyncJob
 
@@ -140,6 +159,88 @@ def create_app(manager: RunManager | None = None, reports_root: Path | None = No
     def market_stats(range: str = Query("60d"), end: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):  # noqa: A002
         try:
             return market.market_stats(end, range)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+
+    @app.get("/api/market/breadth")
+    def market_breadth(range: str = Query("60d"), end: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):  # noqa: A002
+        try:
+            return breadth.breadth(end, range)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+
+    @app.get("/api/market/sectors")
+    def market_sectors(days: int = Query(20), end: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
+        try:
+            return sectors.sectors(end, days)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except (FileNotFoundError, LookupError) as e:
+            raise HTTPException(404, str(e)) from e
+
+    @app.get("/api/market/crowding")
+    def market_crowding(end: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
+        try:
+            return sectors.crowding(end)
+        except (FileNotFoundError, LookupError) as e:
+            raise HTTPException(404, str(e)) from e
+
+    @app.get("/api/market/valuation")
+    def market_valuation(end: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
+        try:
+            return sectors.valuation(end)
+        except (FileNotFoundError, LookupError) as e:
+            raise HTTPException(404, str(e)) from e
+
+    @app.get("/api/market/margin")
+    def market_margin(range: str = Query("1y"), end: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):  # noqa: A002
+        try:
+            return extras.margin(end, range)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+
+    def _guard(fn, *a):
+        try:
+            return fn(*a)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+
+    def day_q():
+        # A fresh Query for each parameter: FastAPI ties a shared one to the first name it serves.
+        return Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+    @app.get("/api/market/qvix")
+    def market_qvix(range: str = Query("1y"), end: str | None = day_q()):  # noqa: A002
+        return _guard(extras.qvix, end, range)
+
+    @app.get("/api/market/flow")
+    def market_flow(range: str = Query("60d"), end: str | None = day_q()):  # noqa: A002
+        return _guard(extras.market_flow, end, range)
+
+    @app.get("/api/market/flow/industry")
+    def market_industry_flow(span: str = Query("1d"), date: str | None = day_q()):
+        return _guard(extras.industry_flow, date, span)
+
+    @app.get("/api/market/releases")
+    def market_releases(date: str | None = day_q()):
+        return _guard(extras.releases, date)
+
+    @app.get("/api/market/lhb")
+    def market_lhb(date: str | None = day_q()):
+        return _guard(extras.lhb, date)
+
+    @app.get("/api/market/themes")
+    def market_themes(days: int = Query(5), date: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
+        try:
+            return extras.themes(date, days)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         except FileNotFoundError as e:
