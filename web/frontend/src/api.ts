@@ -138,6 +138,84 @@ export interface MarketCalendar {
   max: string | null
   latest: string | null
   holidays: string[]
+  missing: string[]   // closed trading days after the newest snapshot: synced on demand
+}
+
+// The market day by day: rises, falls, unchanged and the amount traded (yuan).
+export type StatsRange = '1d' | '60d' | '6m' | '1y'
+export interface MarketDayStats {
+  date: string
+  up: number
+  down: number
+  flat: number
+  total: number
+  amount: number
+  median: number | null     // the median stock's change (%): how most stocks did
+  limit_up: number
+  limit_down: number
+  broken: number            // touched the upper limit, closed below it (炸板)
+}
+export interface MarketStats {
+  range: StatsRange
+  start: string
+  end: string
+  days: MarketDayStats[]
+  indexes: Record<string, { date: string; close: number }[]>   // from the day before ``start``
+  index_base: string
+  index_error: string | null
+  note: string
+}
+
+// The day's limit moves: limit-ups by how many days in a row (连板), 炸板, limit-downs.
+export interface LimitStock {
+  code: string
+  name: string
+  pct_chg: number | null
+  close: number | null
+  amount: number | null
+  turnover: number | null
+  industry: string | null           // Shenwan level 2 (level 1 when it has none)
+  industry_l1: string | null        // Shenwan level 1
+  streak?: number
+  // first_time / last_time: limit-ups and limit-downs. The rest limit-ups only. shape: 一字板 (at the limit all day), T字板 (opened at it, left and came
+  // back), 换手板 (rose to it). The rest from the limit-up pools, null where they lack the stock.
+  shape?: '一字板' | 'T字板' | '换手板' | null
+  reason?: string | null
+  first_time?: string | null
+  last_time?: string | null
+  order_volume?: number | null      // shares
+  order_amount?: number | null      // yuan
+}
+export interface LimitBoard {
+  date: string
+  limit_up: number
+  limit_down: number
+  broken: number
+  broken_rate: number | null
+  max_streak: number
+  ladder: { streak: number; stocks: LimitStock[] }[]
+  broken_list: LimitStock[]
+  down_list: LimitStock[]
+  detail_source: ('ths' | 'em')[]    // where the reasons, times and orders came from
+}
+
+// The background sync that brings the snapshots up to the last closed trading day.
+export interface MarketSync {
+  state: 'idle' | 'running' | 'ok' | 'error'
+  days: string[]
+  msg: string
+  lines: string[]
+  started: string | null
+  finished: string | null
+}
+
+// The 409 detail of /api/market for a day not synced yet.
+export interface NotSynced {
+  code: 'not_synced'
+  day: string
+  missing: string[]
+  msg: string
+  sync: MarketSync
 }
 
 export interface MarketTable {
@@ -201,17 +279,33 @@ export interface Quote extends MarketRow {
   symbol: string
 }
 
+// A failed request: the HTTP status and the body's ``detail`` (a string or an object).
+export class ApiError extends Error {
+  readonly status: number
+  readonly detail: unknown
+
+  constructor(message: string, status: number, detail: unknown) {
+    super(message)
+    this.status = status
+    this.detail = detail
+  }
+}
+
 async function request<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init)
   if (!res.ok) {
-    let detail = `${res.status} ${res.statusText}`
+    let message = `${res.status} ${res.statusText}`
+    let detail: unknown = null
     try {
       const body = await res.json()
-      if (body?.detail) detail = typeof body.detail === 'string' ? body.detail : JSON.stringify(body.detail)
+      detail = body?.detail ?? null
+      if (typeof detail === 'string') message = detail
+      else if (detail && typeof detail === 'object' && 'msg' in detail) message = String((detail as { msg: unknown }).msg)
+      else if (detail) message = JSON.stringify(detail)
     } catch {
       /* not JSON */
     }
-    throw new Error(detail)
+    throw new ApiError(message, res.status, detail)
   }
   return res.json() as Promise<T>
 }
@@ -228,6 +322,11 @@ export const api = {
   reports: () => request<ReportMeta[]>('/api/reports'),
   market: (date?: string) => request<MarketTable>(`/api/market${date ? `?date=${date}` : ''}`),
   marketCalendar: () => request<MarketCalendar>('/api/market/calendar'),
+  marketStats: (range: StatsRange, end?: string) =>
+    request<MarketStats>(`/api/market/stats?range=${range}${end ? `&end=${end}` : ''}`),
+  marketLimits: (date?: string) => request<LimitBoard>(`/api/market/limits${date ? `?date=${date}` : ''}`),
+  marketSync: () => request<MarketSync>('/api/market/sync'),
+  startMarketSync: () => request<MarketSync>('/api/market/sync', { method: 'POST' }),
   indexMembers: (index: string) =>
     request<{ index: string; name: string; as_of: string | null; codes: string[] }>(`/api/market/index/${index}/members`),
   search: (q: string, limit = 10) =>

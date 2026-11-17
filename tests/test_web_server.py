@@ -570,6 +570,210 @@ def test_a_historical_day_comes_from_base(mkt, monkeypatch):
     assert cal["holidays"] == ["2026-11-09", "2026-11-10", "2026-11-11"]
 
 
+def test_market_stats_count_rises_and_falls_and_sum_the_amount_day_by_day(mkt, monkeypatch, tmp_path):
+    from tradingagents.dataflows.vendors.akshare import store
+
+    market, _, data = mkt
+    _history_store(data, monkeypatch, store, market)
+    market._daily_stats.cache_clear()
+    st = market.market_stats("2026-11-13", "60d")
+    assert st["end"] == "2026-11-13" and [d["date"] for d in st["days"]] == [
+        "2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06", "2026-11-12", "2026-11-13"]
+    by = {d["date"]: d for d in st["days"]}
+    assert by["2026-11-05"] == {"date": "2026-11-05", "up": 1, "down": 0, "flat": 0, "total": 1, "amount": 0.0,
+                                "median": 10.0, "limit_up": 0, "limit_down": 0, "broken": 0}
+    assert (by["2026-11-13"]["up"], by["2026-11-13"]["down"], by["2026-11-13"]["total"]) == (3, 1, 4)
+    assert by["2026-11-12"]["amount"] == pytest.approx(2.59e10 + 5.95e9 + 2e9)
+    assert (data / "web" / "market_stats_v3.parquet").exists() and (data / "web" / "limit_events_v3.parquet").exists()
+    assert [d["date"] for d in market.market_stats("2026-11-13", "1d")["days"]] == ["2026-11-13"]
+    assert market.market_stats("2026-11-10", "1d")["end"] == "2026-11-06", "the last day with data on or before"
+    with pytest.raises(ValueError):
+        market.market_stats(None, "2y")
+    client = TestClient(create_app(RunManager(runner=lambda r, e: None), reports_root=tmp_path, watchlist_path=tmp_path / "w.json"))
+    assert client.get("/api/market/stats?range=1y&end=2026-11-13").json()["start"] == "2025-11-13"
+    assert client.get("/api/market/stats?range=2y").status_code == 400
+    assert by["2026-11-13"]["median"] == pytest.approx(0.15)
+    assert st["indexes"] == {} and "指数行情获取失败" in st["index_error"], "no index source in the fake"
+    market._daily_stats.cache_clear()
+
+
+@pytest.mark.parametrize("code, name, day, rate", [
+    ("600519", "贵州茅台", "2026-11-13", 0.10), ("600001", "ST某某", "2026-07-03", 0.05),
+    ("600001", "*ST某某", "2026-07-06", 0.10), ("300308", "中际旭创", "2026-11-13", 0.20),
+    ("300001", "ST创业", "2026-01-05", 0.20), ("300308", "中际旭创", "2020-08-21", 0.10),
+    ("688981", "中芯国际", "2026-11-13", 0.20), ("920489", "佳先股份", "2026-11-13", 0.30),
+    ("830799", "艾融软件", "2026-11-13", 0.30),
+])
+def test_price_limits_by_board_st_and_date(code, name, day, rate):
+    import pandas as pd
+
+    from web.server import market
+
+    got = market.limit_rate(pd.Series([code]), pd.Series([name]), pd.Series([day]))
+    assert got.iat[0] == pytest.approx(rate)
+
+
+def test_limit_moves_round_like_the_exchanges_and_skip_unlimited_days():
+    import pandas as pd
+
+    from web.server import market
+
+    rows = pd.DataFrame({
+        "trade_date": "2026-11-17",
+        "code": ["600770", "920489", "920309", "000701", "600156", "000635", "600519"],
+        "name": ["综艺股份", "佳先股份", "N菊乐", "厦门信达", "华升股份", "英力特", "贵州茅台"],
+        "pre_close": [5.03, 9.65, 31.92, 5.81, 7.15, 11.0, 1400.0],
+        "close": [5.53, 12.54, 56.78, 5.23, 7.35, 0.0, 1410.0],
+        "high": [5.53, 12.54, 70.02, 5.75, 7.87, 0.0, 1420.0],
+        "pct_chg": [9.94, 29.948, 77.882, -9.983, 2.797, 0.0, 0.714],
+        "amount": 1e8,
+    })
+    stats, events = market._stats_of(rows)
+    kinds = dict(zip(events["code"], events["kind"], strict=False))
+    # 5.03 x 1.1 = 5.533 -> 5.53; Beijing cuts 12.545 to 12.54; a new listing has no limit;
+    # 5.81 x 0.9 = 5.229 -> 5.23; 7.15 x 1.1 = 7.865 -> 7.87 touched and lost; suspended skipped.
+    assert kinds == {"600770": "up", "920489": "up", "000701": "down", "600156": "broken"}
+    assert stats.iloc[0][["limit_up", "limit_down", "broken"]].tolist() == [2, 1, 1]
+
+
+def test_the_limit_board_counts_days_in_a_row(mkt, monkeypatch, tmp_path):
+    import pandas as pd
+
+    from tradingagents.dataflows.vendors.akshare import store
+
+    market, _, data = mkt
+    _history_store(data, monkeypatch, store, market)
+    # 300308 closes at the limit on both daily days (2 in a row), 600519 touches it on
+    # 11-13 and falls back, 000001 closes at the lower limit.
+    for day, rows in {
+        "20261112": [("300308", 100.0, 120.0, 120.0, 20.0), ("600519", 100.0, 101.0, 101.0, 1.0),
+                     ("000001", 10.0, 10.1, 10.1, 1.0), ("002142", 20.0, 20.0, 20.0, 0.0)],
+        "20261113": [("300308", 120.0, 144.0, 144.0, 20.0), ("600519", 101.0, 105.0, 111.1, 3.96),
+                     ("000001", 10.1, 9.09, 10.1, -10.0), ("002142", 20.0, 20.2, 20.2, 1.0)],
+    }.items():
+        pd.DataFrame({"trade_date": pd.Timestamp(day), "code": [r[0] for r in rows],
+                      "name": ["中际旭创", "贵州茅台", "平安银行", "宁波银行"],
+                      "pre_close": [r[1] for r in rows], "close": [r[2] for r in rows], "high": [r[3] for r in rows],
+                      "pct_chg": [r[4] for r in rows], "amount": 1e9, "volume": 1e5, "turnover": 1.0,
+                      # 300308 opens at the limit on 11-13 and stays there: 一字板.
+                      "open": [r[2] if day == "20261113" and r[0] == "300308" else r[1] for r in rows],
+                      "low": [r[2] if day == "20261113" and r[0] == "300308" else r[1] for r in rows],
+                      "total_mv": 1e11}).to_parquet(data / "snapshots" / day / "cross_section.parquet")
+    market.invalidate()
+    detail = pd.DataFrame([{"code": "300308", "reason": "光模块+CPO", "first_time": "09:25:00", "last_time": "09:25:00",
+                            "order_volume": 1e6, "order_amount": 1.44e8, "source": "ths"}])
+    down_detail = pd.DataFrame([{"code": "000001", "reason": None, "first_time": "10:01:02", "last_time": "14:50:00",
+                                 "order_volume": 0.0, "order_amount": 0.0, "source": "ths"}])
+    monkeypatch.setattr(market.limit_detail, "details", lambda day, side="up": (
+        detail if side == "up" else down_detail) if day == "2026-11-13" else detail.iloc[:0])
+    b = market.limit_board("2026-11-13")
+    assert (b["limit_up"], b["limit_down"], b["broken"], b["max_streak"]) == (1, 1, 1, 2)
+    assert b["broken_rate"] == pytest.approx(50.0)
+    assert b["ladder"] == [{"streak": 2, "stocks": [{"code": "300308", "name": "中际旭创", "pct_chg": 20.0, "close": 144.0,
+                                                     "amount": 1e9, "turnover": 1.0, "industry": "通信", "industry_l1": "通信",
+                                                     "shape": "一字板", "reason": "光模块+CPO", "first_time": "09:25:00",
+                                                     "last_time": "09:25:00", "order_volume": 1e6,
+                                                     "order_amount": 1.44e8, "streak": 2}]}]
+    assert b["detail_source"] == ["ths"]
+    assert [x["code"] for x in b["broken_list"]] == ["600519"] and [x["code"] for x in b["down_list"]] == ["000001"]
+    assert (b["down_list"][0]["first_time"], b["down_list"][0]["last_time"]) == ("10:01:02", "14:50:00")
+    assert b["broken_list"][0]["industry"] == "白酒Ⅱ", "the level-2 industry where there is one"
+    assert b["broken_list"][0]["industry_l1"] == "食品饮料"
+    first = market.limit_board("2026-11-12")["ladder"][0]["stocks"][0]
+    assert (first["streak"], first["shape"], first["reason"]) == (1, "换手板", None), "no details for a stock the pools lack"
+    client = TestClient(create_app(RunManager(runner=lambda r, e: None), reports_root=tmp_path, watchlist_path=tmp_path / "w.json"))
+    assert client.get("/api/market/limits?date=2026-11-13").json()["max_streak"] == 2
+    market.invalidate()
+
+
+def test_index_closes_come_from_the_local_series_and_start_the_day_before(mkt, monkeypatch):
+    import pandas as pd
+
+    from tradingagents.dataflows.vendors.akshare import store
+
+    market, fake, data = mkt
+    _history_store(data, monkeypatch, store, market)
+    calls = []
+
+    def daily(symbol, start_date):
+        calls.append(symbol)
+        return pd.DataFrame({"date": ["2026-11-06", "2026-11-12", "2026-11-13"], "close": [100.0, 101.0, 99.0]})
+    fake.stock_zh_index_daily_em = daily
+    market._INDEX_MEMO.clear()
+    st = market.market_stats("2026-11-13", "1d")
+    assert st["index_base"] == "2026-11-12" and st["index_error"] is None
+    assert st["indexes"]["沪深300"] == [{"date": "2026-11-12", "close": 101.0}, {"date": "2026-11-13", "close": 99.0}]
+    market.market_stats("2026-11-13", "60d")
+    assert sorted(calls) == ["sh000001", "sh000300", "sh000680", "sh000852", "sh000905", "sz399006", "sz399102"], "once per index per day"
+    market._INDEX_MEMO.clear()
+
+
+@pytest.mark.parametrize("end, rng, start", [
+    ("2026-08-31", "6m", "2026-02-28"), ("2026-11-17", "1y", "2025-11-17"), ("2026-03-15", "6m", "2025-09-15"),
+    ("2026-11-17", "1d", "2026-11-17"),
+])
+def test_stats_ranges_count_back_by_calendar_months(end, rng, start):
+    from web.server import market
+
+    assert market._range_start(end, rng, [end]) == start
+
+
+def test_closed_days_after_the_newest_snapshot_can_be_picked_and_are_synced(mkt, monkeypatch, tmp_path):
+    import pandas as pd
+
+    from tradingagents.dataflows.vendors.akshare import store
+    from web.server.sync_job import SyncJob
+
+    market, fake, data = mkt
+    _history_store(data, monkeypatch, store, market)
+    fake.stock_individual_fund_flow_rank = lambda indicator: pd.DataFrame({"代码": ["300308"], "今日主力净流入-净额": [1.0]})
+    monkeypatch.setattr(store, "_CAL", pd.DatetimeIndex(pd.to_datetime(
+        ["2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06", "2026-11-12", "2026-11-13", "2026-11-16", "2026-11-17"])))
+    monkeypatch.setattr(store, "last_closed_trade_date", lambda now=None: pd.Timestamp("2026-11-17").date())
+    cal = market.calendar()
+    assert cal["max"] == "2026-11-17" and cal["latest"] == "2026-11-13"
+    assert cal["missing"] == ["2026-11-16", "2026-11-17"]
+
+    def runner():                                   # what snapshots.update writes, minus the network
+        for day in ("20261116", "20261117"):
+            src = data / "snapshots" / "20261113" / "cross_section.parquet"
+            (data / "snapshots" / day).mkdir()
+            pd.read_parquet(src).assign(trade_date=pd.Timestamp(day)).to_parquet(data / "snapshots" / day / "cross_section.parquet")
+        return {"status": "ok", "date": "20261117", "gap_days": 1}
+
+    job = SyncJob(runner=runner, on_done=market.invalidate)
+    client = TestClient(create_app(RunManager(runner=lambda r, e: None), reports_root=tmp_path,
+                                   watchlist_path=tmp_path / "w.json", sync_job=job))
+    assert client.get("/api/market?date=2026-11-13").status_code == 200, "cached before the sync"
+    r = client.get("/api/market?date=2026-11-17")
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert detail["code"] == "not_synced" and detail["missing"] == ["2026-11-16", "2026-11-17"]
+    assert detail["sync"]["state"] == "idle"
+    started = client.post("/api/market/sync").json()
+    assert started["days"] == ["2026-11-16", "2026-11-17"]
+    job.join(5)
+    status = client.get("/api/market/sync").json()
+    assert status["state"] == "ok" and "补了 1 个" in status["msg"]
+    table = client.get("/api/market?date=2026-11-17").json()
+    assert table["date"] == "2026-11-17" and table["dates"][:2] == ["2026-11-17", "2026-11-16"]
+    assert client.get("/api/market/calendar").json()["missing"] == []
+    assert client.post("/api/market/sync").json()["msg"] == "本地行情已是最新"
+
+
+def test_a_failed_sync_reports_why(mkt):
+    from web.server.sync_job import SyncJob
+
+    job = SyncJob(runner=lambda: {"status": "incomplete", "msg": "120 只下载失败"})
+    job.start(["2026-11-17"])
+    job.join(5)
+    assert job.status()["state"] == "error" and job.status()["msg"] == "120 只下载失败"
+    boom = SyncJob(runner=lambda: _boom())
+    boom.start(["2026-11-17"])
+    boom.join(5)
+    assert boom.status()["state"] == "error" and "rate limited" in boom.status()["msg"]
+
+
 @pytest.mark.parametrize("day, period", [
     ("2026-11-13", "20260930"), ("2026-10-31", "20260930"), ("2026-10-30", "20260630"),
     ("2026-04-30", "20260331"), ("2026-04-29", "20250930"), ("2025-06-18", "20250331"),
@@ -602,3 +806,72 @@ def test_csi_300_members_fall_back_to_sina(mkt):
     fake.index_stock_cons = lambda symbol: pd.DataFrame({"品种代码": ["600519"], "品种名称": ["贵州茅台"]})
     m = market.index_members("000300")
     assert m["codes"] == ["600519"] and m["as_of"] is None
+
+
+def test_limit_shapes():
+    import pandas as pd
+
+    from web.server import market
+
+    rows = pd.DataFrame({"trade_date": "2026-11-17", "code": ["600001", "600002", "600003", "600004"],
+                         "name": ["一字", "T字", "换手", "炸板"], "pre_close": 10.0,
+                         "open": [11.0, 11.0, 10.2, 10.5], "low": [11.0, 10.6, 10.0, 10.3],
+                         "high": 11.0, "close": [11.0, 11.0, 11.0, 10.8], "pct_chg": [10.0, 10.0, 10.0, 8.0],
+                         "amount": 1e8, "turnover": 2.5})
+    _, events = market._stats_of(rows)
+    assert dict(zip(events["code"], events["shape"], strict=False)) == {
+        "600001": "一字板", "600002": "T字板", "600003": "换手板", "600004": ""}
+
+
+def test_limit_details_from_ths_pages_then_eastmoney(monkeypatch, tmp_path):
+    import pandas as pd
+
+    from web.server import limit_detail as L
+
+    monkeypatch.setattr(L, "_cache", lambda day, side="up": tmp_path / f"{'' if side == 'up' else 'down_'}{day}.parquet")
+    monkeypatch.setattr(L, "_failed", {})
+    monkeypatch.setattr(L, "_PAGE", 1)
+    pages = {1: {"code": "002983", "reason_type": "MicroLED+AI眼镜", "first_limit_up_time": "1794879342",
+                 "last_limit_up_time": "1794898137", "order_volume": 1195188.0, "order_amount": 28624753.0},
+             2: {"code": "600936", "reason_type": "AI应用", "first_limit_up_time": "1794879237",
+                 "last_limit_up_time": "1794898098", "order_volume": 1379400.0, "order_amount": 6096948.0}}
+
+    class R:
+        def __init__(self, body): self.body = body
+        def raise_for_status(self): pass
+        def json(self): return self.body
+
+    def get(url, params, **_):
+        return R({"data": {"page": {"total": 2}, "info": [pages[params["page"]]]}})
+
+    ths = L.fetch_ths("2026-11-17", get=get)
+    assert ths["code"].tolist() == ["002983", "600936"]
+    assert ths.iloc[0][["first_time", "last_time"]].tolist() == ["09:35:42", "14:48:57"], "unix time read in China time"
+    em = pd.DataFrame({"code": ["002983", "920489"], "reason": None, "first_time": ["09:30:00", "11:01:35"],
+                       "last_time": ["09:30:00", "14:38:17"], "order_volume": [1.0, 1242933.0],
+                       "order_amount": [1.0, 15586379.0], "source": "em"})
+    out = L.details("2026-11-13", ths=lambda d: ths, em=lambda d: em)
+    assert out.set_index("code")["source"].to_dict() == {"002983": "ths", "600936": "ths", "920489": "em"}
+    assert (tmp_path / "2026-11-13.parquet").exists(), "a closed day is kept"
+    assert len(L.details("2026-11-13", ths=None, em=None)) == 3, "then read from disk"
+
+    def down(d):
+        raise ConnectionError("down")
+    calls = []
+    assert L.details("2026-11-12", ths=down, em=lambda d: calls.append(d) or down(d)).empty
+    assert L.details("2026-11-12", ths=down, em=lambda d: calls.append(d) or down(d)).empty
+    assert len(calls) == 1, "a day neither feed serves is not asked again at once"
+    down = pd.DataFrame([{"code": "603721", "reason": None, "first_time": "14:52:10", "last_time": "14:54:43",
+                          "order_volume": 0.0, "order_amount": 0.0, "source": "ths"}])
+    got = L.details("2026-11-13", ths=lambda d: down, em=lambda d: down.iloc[:0], side="down")
+    assert got["code"].tolist() == ["603721"], "the limit-down side has its own cache"
+    assert (tmp_path / "down_2026-11-13.parquet").exists()
+
+    seen = []
+
+    def get_down(url, params, **_):
+        seen.append(url)
+        return R({"data": {"page": {"total": 1}, "info": [{"code": "603721", "first_limit_down_time": "1794897130",
+                                                            "last_limit_down_time": "1794898483"}]}})
+    d = L.fetch_ths("2026-11-17", get=get_down, side="down")
+    assert seen[0].endswith("lower_limit_pool") and d.iloc[0][["first_time", "last_time"]].tolist() == ["14:32:10", "14:54:43"]

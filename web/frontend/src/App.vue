@@ -11,6 +11,7 @@ const MENU = [
   { to: '/stock', label: '个股', icon: 'pi pi-search', match: ['/stock'] },
   { to: '/market', label: '行情', icon: 'pi pi-table', match: ['/market'] },
   { to: '/analysis', label: '分析', icon: 'pi pi-chart-bar', match: ['/analysis', '/reports'] },
+  { to: '/guide', label: '指标说明', icon: 'pi pi-book', match: ['/guide'] },
 ]
 // A report page belongs to 分析.
 const active = computed(() => MENU.find((m) => m.match.some((p) => route.path.startsWith(p)))?.to)

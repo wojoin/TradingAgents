@@ -2,7 +2,10 @@
 
   GET  /api/options                     what a run can be set to, defaulting to the last run's answers
   GET  /api/market                      every A-share on ?date= (latest; any trading day): quote, industry, flow
-  GET  /api/market/calendar             the trading days a date can be picked from
+  GET  /api/market/calendar             the trading days a date can be picked from (to the last closed one)
+  GET  /api/market/stats               ?range=1d|60d|6m|1y&end=: rises, falls and amount traded, day by day
+  GET  /api/market/limits              ?date=: the day's limit-ups by run length (连板), 炸板 and limit-downs
+  GET/POST /api/market/sync             the snapshot sync for days not on disk yet: its status, or start it
   GET  /api/market/index/{code}/members today's constituents of an index (000300: 沪深300)
   GET  /api/watchlist                   the watchlist's groups and their stocks' rows (?rows=0: groups only)
   POST /api/watchlist/groups            create a group {"name", "color"} (at most 256)
@@ -41,6 +44,7 @@ from pydantic import BaseModel
 
 from web.server import market, reports, settings as run_settings, watchlist
 from web.server.runs import RunManager
+from web.server.sync_job import SyncJob
 
 DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
 SSE_WAIT_SECONDS = 15.0
@@ -65,9 +69,10 @@ class NewRun(BaseModel):
 
 
 def create_app(manager: RunManager | None = None, reports_root: Path | None = None,
-               watchlist_path: Path | None = None) -> FastAPI:
+               watchlist_path: Path | None = None, sync_job: SyncJob | None = None) -> FastAPI:
     app = FastAPI(title="TradingAgents Web", docs_url="/api/docs", openapi_url="/api/openapi.json")
     app.state.manager = manager or RunManager()
+    sync = sync_job or SyncJob(on_done=market.invalidate)
     # The market table is ~5,000 rows of JSON; event streams are left uncompressed by default.
     app.add_middleware(GZipMiddleware, minimum_size=2048)
     root = reports_root
@@ -131,6 +136,33 @@ def create_app(manager: RunManager | None = None, reports_root: Path | None = No
     def market_calendar():
         return market.calendar()
 
+    @app.get("/api/market/stats")
+    def market_stats(range: str = Query("60d"), end: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):  # noqa: A002
+        try:
+            return market.market_stats(end, range)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+
+    @app.get("/api/market/limits")
+    def market_limits(date: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
+        try:
+            return market.limit_board(date)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+
+    @app.get("/api/market/sync")
+    def market_sync_status():
+        return sync.status()
+
+    @app.post("/api/market/sync")
+    def market_sync_start():
+        days = market.missing_days()
+        if not days and sync.state != "running":
+            return {**sync.status(), "state": "ok", "days": [], "msg": "本地行情已是最新"}
+        return sync.start(days)
+
     @app.get("/api/market/index/{index}/members")
     def market_index_members(index: str):
         try:
@@ -144,6 +176,10 @@ def create_app(manager: RunManager | None = None, reports_root: Path | None = No
     def market_table(date: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
         try:
             return market.market_table(date)
+        except market.NotSynced as e:
+            # 409: the day is real but not on disk yet; POST /api/market/sync brings it in.
+            raise HTTPException(409, {"code": "not_synced", "day": e.day, "missing": e.missing,
+                                      "msg": str(e), "sync": sync.status()}) from e
         except FileNotFoundError as e:
             raise HTTPException(404, str(e)) from e
 

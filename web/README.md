@@ -24,7 +24,10 @@ A browser front end for TradingAgents, with a left-hand menu:
 - **行情** (market): every A-share on any trading day picked from a calendar (weekends and
   holidays disabled), with the day's count of rises, falls and unchanged, from the local
   AKShare store (`.akshare_data/snapshots`; a day before the daily directories is read out
-  of `snapshots/base` in a few seconds the first time, then cached under `.akshare_data/web`): code, name, change, price, main-force net inflow, opening
+  of `snapshots/base` in a few seconds the first time, then cached under `.akshare_data/web`;
+  the calendar runs to the last closed trading day, and a day after the newest snapshot is
+  synced in the background when picked — the same as `tradingagents-ashare sync --only snapshots`,
+  a couple of minutes when skipped days need each stock's bars — with progress shown): code, name, change, price, main-force net inflow, opening
   change, high, low, amount, volume, 5-day change (each session's change compounded, so
   an ex-dividend day does not distort it), Shenwan industry, turnover %, P/E and EPS
   (TTM), market value and shares, total and floating; sortable, searchable, filterable by
@@ -33,9 +36,32 @@ A browser front end for TradingAgents, with a left-hand menu:
   Securities Index) or ST stocks; the notes on the figures' sources sit beside it.
   Long-press a row (or right-click it) for groups, the note, the stock page and analysis. The flow is Eastmoney's 今日主力净流入 for the latest
   session; when Eastmoney is rate-limited it is 同花顺's net flow, labelled as such.
+  Below the table, for the day shown: the spread of changes in bands (falls >10%, 10–7, 7–5,
+  5–3, 3–0, unchanged, rises 0–3 … >10%); the limit board — limit-ups, limit-downs, 炸板
+  (touched the upper limit, closed below) and its rate, and the limit-ups by days in a row
+  (连板天梯); and the Shenwan industries ranked (level 1 or 2; a level-1 name filters the
+  table). Over the day, 60 trading days, six months or a year to it, each card with its own
+  span: rises and falls, limit moves, 赚钱效应 (the median stock's change), the 上证指数,
+  沪深300, 中证500, 中证1000, 创业板指, 创业板综 and 科创综指 against the median stock with the advance-decline line, and the
+  amount traded. Limits follow the boards: main board 10%, ST 5% (10% from 2026-07-06),
+  ChiNext and STAR 20%, Beijing 30% (its limit prices cut to the fen, the others round half
+  up); a move past the limit is a day without one (a new listing) and is not counted. Base
+  days are worked out once, a year at a time, and kept in `.akshare_data/web/`
+  (`market_stats_v3.parquet`, `limit_events_v3.parquet`); index closes are kept up to date in
+  `.akshare_data/ts/`. The limit-up table adds each stock's shape (一字板 at the limit all day,
+  T字板 opened at it, left and came back, else 换手板, from the day's open and low) and, from
+  同花顺's limit-up pool (an unpublished JSON feed, years deep, no Beijing exchange), the reason,
+  first and last sealing time and the orders left at the limit at the close; Eastmoney's pool
+  (about a month deep) fills in the Beijing stocks without a reason. A closed day's details are
+  kept in `.akshare_data/web/limit_detail/`; a day neither feed serves shows — and is asked
+  again after ten minutes.
 - **分析** (analysis): start an analysis from a stock code or name (a name resolves to
   its code, and an ambiguous one lists the candidates), follow every agent live, and
   the saved reports in a table below, each downloadable as Markdown, HTML or a ZIP.
+- **指标说明** (guide): what the terms on these pages mean and how to read them (the market
+  table, limit moves, the market stats, the industry board, the K-line indicators, the
+  analysis options), by section, with a search. The text lives in `views/GuideView.vue`;
+  keep it in step when a page changes how it works a figure out.
 
 - `server/`: FastAPI. It runs the same trading graph as the CLI and saves the same
   report tree under `results_dir/reports` (by default `~/.tradingagents/logs/reports`).
@@ -110,7 +136,10 @@ Keep the server on `127.0.0.1`: it has no login, and every run spends model cred
 |---|---|---|
 | GET | `/api/options` | every option a run can take, with the last run's answers as defaults |
 | GET | `/api/market?date=YYYY-MM-DD` | every A-share on the day (latest by default; any trading day) |
-| GET | `/api/market/calendar` | the first and last trading day, and the holidays in between |
+| GET | `/api/market/calendar` | the first and last (closed) trading day, the holidays in between, and the days not synced yet |
+| GET | `/api/market/stats` | `?range=1d\|60d\|6m\|1y&end=`: rises, falls, unchanged and amount traded, day by day |
+| GET | `/api/market/limits` | `?date=`: limit-ups by days in a row (with shape, reason, sealing times, orders), 炸板 and limit-downs |
+| GET / POST | `/api/market/sync` | the background snapshot sync: its status and progress, or start it |
 | GET | `/api/market/index/000300/members` | the CSI 300's constituents today |
 | GET | `/api/stocks/search?q=`, `/api/stocks/{code}` | find stocks by code or name; one stock's quote |
 | GET | `/api/watchlist` | the groups, and their stocks' rows by code |

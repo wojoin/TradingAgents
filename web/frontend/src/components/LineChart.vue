@@ -1,0 +1,160 @@
+<script setup lang="ts">
+// Lines (or bars) over trading days (lightweight-charts), with a legend that shows the values on the
+// day under the mouse, or on the last day. With ``pick``, the line nearest the mouse is drawn
+// thicker and named beside it.
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { ColorType, createChart, HistogramSeries, LineSeries, type IChartApi, type ISeriesApi, type SeriesType, type Time } from 'lightweight-charts'
+
+export interface Line {
+  name: string
+  color: string
+  points: { time: string; value: number; color?: string }[]
+  bars?: boolean          // a bar per day (each may have its own colour) instead of a line
+}
+
+// ``rows``: line names grouped into legend rows (any line not named goes on a row of its own at
+// the end); without it the legend is one wrapping row.
+const props = withDefaults(defineProps<{
+  lines: Line[]; format?: (v: number) => string; height?: number; pick?: boolean; rows?: string[][]
+}>(), {
+  format: (v: number) => v.toLocaleString('zh-CN'),
+  height: 240,
+  pick: false,
+})
+
+const el = ref<HTMLDivElement>()
+const hover = ref<string | null>(null)
+// The line under the mouse (within PICK_PX of it): its index in ``lines``, value and where to label it.
+const PICK_PX = 14
+const near = ref<{ i: number; value: number; x: number; y: number } | null>(null)
+let chart: IChartApi | null = null
+let series: ISeriesApi<SeriesType>[] = []
+
+const days = computed(() => props.lines[0]?.points.map((p) => p.time) || [])
+const shownDay = computed(() => hover.value ?? days.value[days.value.length - 1] ?? null)
+const legend = computed(() =>
+  props.lines.map((l) => ({
+    name: l.name, color: l.color,
+    value: l.points.find((p) => p.time === shownDay.value)?.value ?? null,
+  })),
+)
+const legendRows = computed(() => {
+  const items = legend.value
+  if (!props.rows) return null
+  const byName = new Map(items.map((x) => [x.name, x]))
+  const named = new Set(props.rows.flat())
+  return [...props.rows.map((r) => r.flatMap((n) => byName.get(n) ?? [])), items.filter((x) => !named.has(x.name))]
+    .filter((r) => r.length)
+})
+
+// Right of the mouse, or left of it in the chart's right third, so the label stays inside.
+const pickStyle = computed(() => {
+  const n = near.value
+  if (!n) return {}
+  const flip = n.x > (el.value?.clientWidth ?? 0) * 0.66
+  return { left: `${n.x + (flip ? -12 : 12)}px`, top: `${Math.max(n.y - 30, 0)}px`, transform: flip ? 'translateX(-100%)' : 'none' }
+})
+
+function formatDay(t: Time): string {
+  if (typeof t === 'string') return t
+  if (typeof t === 'number') return new Date(t * 1000).toISOString().slice(0, 10)
+  return `${t.year}-${String(t.month).padStart(2, '0')}-${String(t.day).padStart(2, '0')}`
+}
+
+function draw() {
+  if (!chart) return
+  for (const s of series) chart.removeSeries(s)
+  const single = days.value.length <= 1          // one day: a dot, since a line needs two
+  const priceFormat = { type: 'custom' as const, formatter: props.format, minMove: 0.01 }
+  series = props.lines.map((l) => {
+    if (l.bars) {
+      const s = chart!.addSeries(HistogramSeries, { color: l.color, priceLineVisible: false, lastValueVisible: false, priceFormat })
+      s.setData(l.points.map((p) => ({ time: p.time as Time, value: p.value, color: p.color })))
+      return s
+    }
+    const s = chart!.addSeries(LineSeries, {
+      color: l.color, lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
+      pointMarkersVisible: single, pointMarkersRadius: 4, priceFormat,
+    })
+    s.setData(l.points.map((p) => ({ time: p.time as Time, value: p.value })))
+    return s
+  })
+  chart.timeScale().fitContent()
+  near.value = null
+}
+
+onMounted(() => {
+  if (!el.value) return
+  chart = createChart(el.value, {
+    autoSize: true,
+    layout: { background: { type: ColorType.Solid, color: '#ffffff' }, textColor: '#4b5563', attributionLogo: false },
+    grid: { vertLines: { color: '#f1f3f6' }, horzLines: { color: '#f1f3f6' } },
+    rightPriceScale: { borderColor: '#e3e7ec' },
+    timeScale: { borderColor: '#e3e7ec' },
+    localization: { locale: 'zh-CN', timeFormatter: formatDay },
+    handleScroll: false,
+    handleScale: false,
+  })
+  chart.subscribeCrosshairMove((p) => {
+    hover.value = p.time === undefined ? null : formatDay(p.time)
+    if (!props.pick) return
+    let best: { i: number; value: number; d: number } | null = null
+    if (p.point && p.time !== undefined) {
+      series.forEach((s, i) => {
+        const v = (p.seriesData.get(s) as { value?: number } | undefined)?.value
+        const y = v === undefined ? null : s.priceToCoordinate(v)
+        if (v === undefined || y === null) return
+        const d = Math.abs(y - p.point!.y)
+        if (d <= PICK_PX && (!best || d < best.d)) best = { i, value: v, d }
+      })
+    }
+    const b = best as { i: number; value: number; d: number } | null
+    if ((near.value?.i ?? -1) !== (b?.i ?? -1)) {
+      series.forEach((s, i) => s.applyOptions({ lineWidth: b && i === b.i ? 4 : 2 }))
+    }
+    near.value = b && p.point ? { i: b.i, value: b.value, x: p.point.x, y: p.point.y } : null
+  })
+  draw()
+})
+
+watch(() => props.lines, draw, { deep: false })
+onBeforeUnmount(() => {
+  chart?.remove()
+  chart = null
+})
+</script>
+
+<template>
+  <div>
+    <div v-if="legendRows" class="legend rows">
+      <div class="muted">{{ shownDay || '—' }}</div>
+      <div v-for="(row, i) in legendRows" :key="i" class="lrow">
+        <span v-for="l in row" :key="l.name"><i class="dot" :style="{ background: l.color }" />{{ l.name }}
+          <b>{{ l.value === null ? '—' : format(l.value) }}</b></span>
+      </div>
+    </div>
+    <div v-else class="legend">
+      <span class="muted">{{ shownDay || '—' }}</span>
+      <span v-for="l in legend" :key="l.name"><i class="dot" :style="{ background: l.color }" />{{ l.name }}
+        <b>{{ l.value === null ? '—' : format(l.value) }}</b></span>
+    </div>
+    <div class="plot">
+      <div ref="el" :style="{ height: `${height}px` }" />
+      <div v-if="near && lines[near.i]" class="pick" :style="pickStyle">
+        <i class="dot" :style="{ background: lines[near.i].color }" />{{ lines[near.i].name }}
+        <b>{{ format(near.value) }}</b>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; margin-bottom: 4px; font-variant-numeric: tabular-nums; }
+.legend.rows { flex-direction: column; gap: 2px; }
+.lrow { display: flex; flex-wrap: wrap; gap: 2px 14px; padding-left: 6px; }
+.plot { position: relative; }
+.pick { position: absolute; z-index: 3; pointer-events: none; white-space: nowrap; font-size: 12px; padding: 3px 8px;
+        background: #fff; border: 1px solid #e3e7ec; border-radius: 6px; box-shadow: 0 2px 6px rgba(0, 0, 0, .08);
+        font-variant-numeric: tabular-nums; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+</style>

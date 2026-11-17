@@ -9,6 +9,7 @@ export const router = createRouter({
     { path: '/stock/:code?', name: 'stock', component: () => import('./views/StockView.vue'), props: true },
     { path: '/market', name: 'market', component: () => import('./views/MarketView.vue') },
     { path: '/analysis', name: 'analysis', component: () => import('./views/AnalysisView.vue') },
+    { path: '/guide', name: 'guide', component: () => import('./views/GuideView.vue') },
     { path: '/reports', redirect: '/analysis' },
     { path: '/reports/:id', name: 'report', component: () => import('./views/ReportView.vue'), props: true },
   ],

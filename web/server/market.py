@@ -19,10 +19,12 @@ import threading
 from functools import lru_cache
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from tradingagents.dataflows.symbols import a_share_code, normalize_symbol
 from tradingagents.dataflows.vendors.akshare import settings as ak_settings, store
+from web.server import limit_detail
 
 XS_FILE = "cross_section.parquet"
 _LOCK = threading.Lock()
@@ -54,6 +56,8 @@ def cross_section(date: str | None = None) -> tuple[str, pd.DataFrame]:
     day = date or dates[0]
     if day in dates:
         return day, _read_xs(day.replace("-", ""))
+    if day > dates[0]:
+        raise NotSynced(day, missing_days())
     xs = _history_day(day)
     if xs.empty:
         raise FileNotFoundError(f"no market data for {day}: not a trading day on record")
@@ -157,27 +161,59 @@ def base_through_day() -> str | None:
     return f"{d[:4]}-{d[4:6]}-{d[6:]}" if d else None
 
 
+class NotSynced(LookupError):
+    """A closed trading day after the newest daily snapshot: it has to be synced first."""
+
+    def __init__(self, day: str, missing: list[str]):
+        super().__init__(f"{day} 的行情还没有同步到本地")
+        self.day, self.missing = day, missing
+
+
+def last_closed_day() -> str:
+    """The latest trading day that has closed (Beijing time), YYYY-MM-DD."""
+    return f"{store.last_closed_trade_date():%Y-%m-%d}"
+
+
 def trading_days() -> list[str]:
-    """Trading days (YYYY-MM-DD) up to the latest one on disk, oldest first."""
+    """Trading days (YYYY-MM-DD) up to the latest closed one, oldest first; days after the
+    newest snapshot on disk are listed too (``missing_days``), for they can be synced."""
     dates = available_dates()
     if not dates:
         return []
     cal = [f"{d:%Y-%m-%d}" for d in store.trade_calendar()]
-    latest = dates[0]
-    days = [d for d in cal if d <= latest]
+    last = max(dates[0], last_closed_day())
+    days = [d for d in cal if d <= last]
     return sorted(set(days) | set(dates))
 
 
+def missing_days() -> list[str]:
+    """Closed trading days after the newest daily snapshot, oldest first."""
+    dates = available_dates()
+    if not dates:
+        return []
+    return [d for d in trading_days() if d > dates[0]]
+
+
 def calendar() -> dict:
-    """The date picker's bounds: first and last trading day, and the weekdays in between that
-    are not trading days (holidays), so only trading days can be picked."""
+    """The date picker's bounds: first and last (closed) trading day, the weekdays in between
+    that are not trading days (holidays), so only trading days can be picked, and the days at
+    the end not synced yet."""
     days = trading_days()
     if not days:
-        return {"min": None, "max": None, "latest": None, "holidays": []}
+        return {"min": None, "max": None, "latest": None, "holidays": [], "missing": []}
     trading = set(days)
     weekdays = pd.bdate_range(days[0], days[-1])
     holidays = [f"{d:%Y-%m-%d}" for d in weekdays if f"{d:%Y-%m-%d}" not in trading]
-    return {"min": days[0], "max": days[-1], "latest": available_dates()[0], "holidays": holidays}
+    return {"min": days[0], "max": days[-1], "latest": available_dates()[0], "holidays": holidays,
+            "missing": missing_days()}
+
+
+def invalidate() -> None:
+    """Forget everything derived from the snapshots on disk, after a sync added days."""
+    with _LOCK:
+        _TABLES.clear()
+    for f in (_read_xs, pct_5d, _history_day, _daily_stats):
+        f.cache_clear()
 
 
 def _window(day: str, n: int = 5) -> list[str]:
@@ -235,6 +271,287 @@ def _history_day(day: str) -> pd.DataFrame:
     path.parent.mkdir(parents=True, exist_ok=True)
     xs.reset_index(drop=True).to_parquet(path)
     return xs.reset_index(drop=True)
+
+
+# ---------------------------------------------------------------------------
+# The market's history: rises and falls, limit moves, the median change and turnover
+# ---------------------------------------------------------------------------
+STATS_RANGES = ("1d", "60d", "6m", "1y")
+_STATS_COLS = ["date", "up", "down", "flat", "total", "amount", "median", "limit_up", "limit_down", "broken"]
+_EVENT_COLS = ["date", "code", "name", "kind", "pct_chg", "close", "amount", "turnover", "shape"]
+STATS_VERSION = 3               # bump when the stats change, so the disk cache is rebuilt
+# Price limits by board. Main-board ST stocks moved from 5% to 10% on 2026-07-06 (SSE and
+# SZSE trading rules of 2026-04-24); ChiNext went from 10% to 20% on 2020-08-24.
+ST_TEN_FROM = "2026-07-06"
+CHINEXT_TWENTY_FROM = "2020-08-24"
+_EPS = 1e-4
+
+
+def limit_rate(code: pd.Series, name: pd.Series, date: pd.Series) -> pd.Series:
+    """Each row's daily price limit (0.05 … 0.30) by board, ST status and date. ST is read off
+    the name the row carries; ``snapshots/base`` carries today's name, so a stock that became
+    ST lately counts as ST on its earlier days too (it matters only before 2026-07-06)."""
+    c = code.astype(str).str.zfill(6)
+    d = date.astype(str).str[:10]
+    st = name.astype(str).str.upper().str.contains("ST", regex=False)
+    rate = pd.Series(0.10, index=c.index)
+    rate[st & (d < ST_TEN_FROM)] = 0.05
+    rate[c.str[:3].isin(["300", "301"]) & (d >= CHINEXT_TWENTY_FROM)] = 0.20
+    rate[c.str[:3].isin(["688", "689"])] = 0.20
+    rate[c.str[0].isin(["4", "8"]) | (c.str[:3] == "920")] = 0.30
+    return rate
+
+
+def _limit_price(pre: pd.Series, rate: pd.Series, sign: int, bj: pd.Series) -> pd.Series:
+    """The limit price: the previous close moved by the limit, to the fen. Shanghai and
+    Shenzhen round half up; the Beijing exchange cuts toward the previous close (9.65 × 1.3 =
+    12.545 had an upper limit of 12.54)."""
+    raw = pre * (1 + sign * rate) * 100
+    rounded = np.floor(raw + 0.5 + 1e-7)
+    cut = np.floor(raw + 1e-7) if sign > 0 else np.ceil(raw - 1e-7)
+    return pd.Series(np.where(bj, cut, rounded), index=pre.index) / 100
+
+
+def _day_frame(rows: pd.DataFrame) -> pd.DataFrame:
+    """rows with date, pct, amount and the day's limit flags (up, down, broken: touched the
+    upper limit but closed below it)."""
+    num = lambda c: pd.to_numeric(rows[c], errors="coerce") if c in rows else pd.Series(np.nan, index=rows.index)  # noqa: E731
+    pre, close, high, low, open_ = num("pre_close"), num("close"), num("high"), num("low"), num("open")
+    date = rows["trade_date"].astype(str).str[:10]
+    rate = limit_rate(rows["code"], rows["name"] if "name" in rows else pd.Series("", index=rows.index), date)
+    code = rows["code"].astype(str).str.zfill(6)
+    bj = code.str[0].isin(["4", "8"]) | (code.str[:3] == "920")
+    up_px, down_px = _limit_price(pre, rate, 1, bj), _limit_price(pre, rate, -1, bj)
+    # A move past the limit is a day without one (a new listing's first days): no limit move.
+    ok = (pre > 0) & (close > 0) & (num("pct_chg").abs() <= rate * 100 + 0.5)
+    limit_up = ok & (close >= up_px - _EPS)
+    # How a limit-up got there: 一字板 opened at the limit and never left it, T字板 opened at it,
+    # traded below and sealed again, 换手板 rose to it during the day.
+    at_open, never_left = open_ >= up_px - _EPS, low >= up_px - _EPS
+    shape = np.select([limit_up & at_open & never_left, limit_up & at_open, limit_up], ["一字板", "T字板", "换手板"], "")
+    return pd.DataFrame({
+        "date": date, "code": code,
+        "name": rows["name"].astype(str) if "name" in rows else "", "pct_chg": num("pct_chg"),
+        "close": close, "amount": num("amount"), "turnover": num("turnover"), "shape": shape,
+        "limit_up": limit_up,
+        "limit_down": ok & (close <= down_px + _EPS),
+        "broken": ok & (high >= up_px - _EPS) & (close < up_px - _EPS),
+    })
+
+
+def _stats_of(rows: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """(one row per day: counts, the amount traded in yuan, the median change and limit
+    moves; one row per limit move: up, down or broken)."""
+    if not len(rows):
+        return pd.DataFrame(columns=_STATS_COLS), pd.DataFrame(columns=_EVENT_COLS)
+    x = _day_frame(rows)
+    pct = x["pct_chg"]
+    x = x.assign(up=pct > 0, down=pct < 0, flat=pct == 0)
+    g = x.groupby("date").agg(up=("up", "sum"), down=("down", "sum"), flat=("flat", "sum"), total=("up", "size"),
+                              amount=("amount", "sum"), median=("pct_chg", "median"), limit_up=("limit_up", "sum"),
+                              limit_down=("limit_down", "sum"), broken=("broken", "sum")).reset_index()
+    kind = np.select([x["limit_up"], x["limit_down"], x["broken"]], ["up", "down", "broken"], "")
+    ev = x.assign(kind=kind)
+    ev = ev[ev["kind"] != ""][_EVENT_COLS].reset_index(drop=True)
+    return g[_STATS_COLS], ev
+
+
+def _stats_cache() -> Path:
+    return store.root() / "web" / f"market_stats_v{STATS_VERSION}.parquet"
+
+
+def _events_cache() -> Path:
+    return store.root() / "web" / f"limit_events_v{STATS_VERSION}.parquet"
+
+
+def _base_stats(days: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """The stats and limit moves of days in ``snapshots/base``: worked out once (a scan of
+    every stock's file), then kept on disk, since base no longer changes."""
+    if not days:
+        return pd.DataFrame(columns=_STATS_COLS), pd.DataFrame(columns=_EVENT_COLS)
+    path, epath = _stats_cache(), _events_cache()
+    have = pd.read_parquet(path) if path.exists() else pd.DataFrame(columns=_STATS_COLS)
+    events = pd.read_parquet(epath) if epath.exists() else pd.DataFrame(columns=_EVENT_COLS)
+    todo = sorted(set(days) - set(have["date"]))
+    if todo:
+        # Opening every stock's file is most of the cost, whatever the span: take a year
+        # at a time, so switching between 60 days, six months and a year scans once.
+        lo = min(todo[0], _range_start(todo[-1], "1y", todo))
+        fresh, fresh_ev = _stats_of(_scan_base(lo, todo[-1]))
+        none = [d for d in todo if d not in set(fresh["date"])]
+        fresh = fresh[~fresh["date"].isin(have["date"])]
+        fresh_ev = fresh_ev[fresh_ev["date"].isin(set(fresh["date"]))]
+        if none:          # a trading day no stock traded on (none such, but be safe): zeros
+            fresh = pd.concat([fresh, pd.DataFrame({c: [0] * len(none) for c in _STATS_COLS[1:]} | {"date": none})])
+        have = pd.concat([have, fresh], ignore_index=True).sort_values("date").reset_index(drop=True)
+        events = pd.concat([events, fresh_ev], ignore_index=True).sort_values(["date", "code"]).reset_index(drop=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        events.to_parquet(epath)          # events first: stats on disk mean their events are too
+        have.to_parquet(path)
+    return have[have["date"].isin(days)], events[events["date"].isin(days)]
+
+
+@lru_cache(maxsize=64)
+def _daily_stats(day: str) -> tuple[pd.DataFrame, pd.DataFrame]:
+    return _stats_of(_read_xs(day.replace("-", "")).assign(trade_date=day))
+
+
+def _range_start(end: str, rng: str, days: list[str]) -> str:
+    """The first day of ``rng`` ending on ``end``: 1d the day, 60d sixty trading days, 6m and 1y
+    the same date six or twelve months back (a 31st that month lacks lands on its last day)."""
+    if rng == "1d":
+        return end
+    if rng == "60d":
+        return days[-60] if len(days) >= 60 else days[0]
+    y, m, d = (int(v) for v in end.split("-"))
+    m -= 6 if rng == "6m" else 12
+    while m <= 0:
+        y, m = y - 1, m + 12
+    last = pd.Timestamp(year=y, month=m, day=1).days_in_month
+    return f"{y:04d}-{m:02d}-{min(d, last):02d}"
+
+
+def _days_on_record(end: str | None) -> list[str]:
+    """Trading days with data (a daily snapshot or base) up to ``end``."""
+    daily, bt = set(available_dates()), base_through_day()
+    days = [d for d in trading_days() if d in daily or (bt and d <= bt)]
+    if end:
+        days = [d for d in days if d <= end]
+    if not days:
+        raise FileNotFoundError(f"no market data on or before {end}")
+    return days
+
+
+def _span_stats(span: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
+    daily = set(available_dates())
+    base_s, base_e = _base_stats([d for d in span if d not in daily])
+    parts = [_daily_stats(d) for d in span if d in daily]
+    stats = [base_s, *[p[0] for p in parts]]
+    events = [base_e, *[p[1] for p in parts]]
+    cat = lambda xs, cols: pd.concat([x for x in xs if len(x)], ignore_index=True) if any(len(x) for x in xs) \
+        else pd.DataFrame(columns=cols)  # noqa: E731
+    return cat(stats, _STATS_COLS).sort_values("date"), cat(events, _EVENT_COLS)
+
+
+# Indexes to set against the stocks: the local series name and the index code.
+BENCHMARKS = {"上证指数": ("sh_comp", "sh000001"), "沪深300": ("idx_hs300", "sh000300"),
+              "中证500": ("idx_zz500", "sh000905"), "中证1000": ("idx_zz1000", "sh000852"),
+              "创业板指": ("idx_cyb", "sz399006"), "创业板综": ("idx_cybz", "sz399102"),
+              "科创综指": ("idx_kcz", "sh000680")}
+_INDEX_MEMO: dict[tuple[str, str], pd.DataFrame] = {}
+
+
+def index_closes(name: str) -> pd.DataFrame:
+    """An index's daily closes (date, close), kept up to date in ``ts/`` (Eastmoney), at most
+    one download per index per closed trading day."""
+    series, symbol = BENCHMARKS[name]
+    key = (series, last_closed_day())
+    if key not in _INDEX_MEMO:
+        df = store.incremental(series, lambda s: store.ak().stock_zh_index_daily_em(symbol=symbol, start_date=s),
+                               "date", "20240101")
+        _INDEX_MEMO[key] = pd.DataFrame({"date": store.to_local_dates(df["date"]).dt.strftime("%Y-%m-%d"),
+                                         "close": pd.to_numeric(df["close"], errors="coerce")}).dropna()
+    return _INDEX_MEMO[key]
+
+
+def market_stats(end: str | None = None, rng: str = "60d") -> dict:
+    """The market day by day over ``rng`` (1d, 60d, 6m, 1y) to ``end`` (the latest day on disk
+    by default): rises, falls, unchanged, the median change, limit moves and the amount
+    traded, every A-share on record; and the main indexes' closes over the same days."""
+    if rng not in STATS_RANGES:
+        raise ValueError(f"range 只能是 {', '.join(STATS_RANGES)}")
+    days = _days_on_record(end)
+    end = days[-1]
+    start = _range_start(end, rng, days)
+    span = [d for d in days if d >= start]
+    stats, _ = _span_stats(span)
+    rows = [{"date": r.date, "up": int(r.up), "down": int(r.down), "flat": int(r.flat), "total": int(r.total),
+             "amount": float(r.amount), "median": _trim(_num(r.median)), "limit_up": int(r.limit_up),
+             "limit_down": int(r.limit_down), "broken": int(r.broken)}
+            for r in stats.itertuples(index=False) if r.total]
+    # The index closes from the trading day before the span, so each line starts at 0%.
+    prev = days[days.index(span[0]) - 1] if days.index(span[0]) else span[0]
+    indexes, index_error = {}, None
+    for name in BENCHMARKS:
+        try:
+            x = index_closes(name)
+            x = x[(x["date"] >= prev) & (x["date"] <= end)]
+            indexes[name] = [{"date": d, "close": float(c)} for d, c in zip(x["date"], x["close"], strict=False)]
+        except Exception as e:  # noqa: BLE001 - the stocks' stats stand without the indexes
+            index_error = f"指数行情获取失败：{type(e).__name__}"
+    return {"range": rng, "start": start, "end": end, "days": rows, "indexes": indexes, "index_base": prev,
+            "index_error": index_error,
+            "note": ("按本地个股日线统计（全部A股，含北交所），成交额为各股成交额之和；涨跌停按板块涨跌幅计算"
+                     "（主板 10%、ST 5%（2026-07-06 起 10%）、创业板/科创板 20%、北交所 30%）")}
+
+
+def limit_board(date: str | None = None) -> dict:
+    """The day's limit moves: limit-up stocks by how many days in a row they have closed at
+    the limit (连板), the ones that touched it but closed below (炸板), and limit-down ones."""
+    days = _days_on_record(date)
+    day = days[-1]
+    span = days[-40:]                      # enough to count back any run of limit-ups
+    _, events = _span_stats(span)
+    ups = {d: set(g["code"]) for d, g in events[events["kind"] == "up"].groupby("date")}
+    today = events[events["date"] == day]
+    sectors = industries()
+
+    def streak(code: str) -> int:
+        n = 0
+        for d in reversed(span):
+            if code not in ups.get(d, ()):
+                break
+            n += 1
+        return n
+
+    def item(r) -> dict:
+        # The Shenwan level-2 industry (level 1 when a stock has no level-2 one).
+        ind = l1 = None
+        if r.code in sectors.index:
+            l1 = sectors["sw1"].get(r.code)
+            ind = sectors["sw2"].get(r.code)
+            if not isinstance(ind, str):
+                ind = l1
+        return {"code": r.code, "name": re.sub(r"\s+", "", str(r.name)), "pct_chg": _trim(_num(r.pct_chg)),
+                "close": _trim(_num(r.close)), "amount": _trim(_num(r.amount)),
+                "turnover": _trim(_num(getattr(r, "turnover", None))),
+                "industry": ind if isinstance(ind, str) else None,
+                "industry_l1": l1 if isinstance(l1, str) else None}
+
+    # The reason, sealing times and orders at the limit come from the limit-up pools.
+    detail = limit_detail.details(day).set_index("code") if (today["kind"] == "up").any() else pd.DataFrame()
+
+    def extra(r) -> dict:
+        d = detail.loc[r.code] if r.code in detail.index else None
+        get = lambda k: None if d is None or pd.isna(d[k]) else d[k]  # noqa: E731
+        return {"shape": getattr(r, "shape", None) or None, "reason": get("reason"),
+                "first_time": get("first_time"), "last_time": get("last_time"),
+                "order_volume": _trim(_num(get("order_volume"))), "order_amount": _trim(_num(get("order_amount")))}
+
+    up = [{**item(r), **extra(r), "streak": streak(r.code)} for r in today[today["kind"] == "up"].itertuples(index=False)]
+    ladder: dict[int, list] = {}
+    for x in sorted(up, key=lambda x: -(x["amount"] or 0)):
+        ladder.setdefault(x["streak"], []).append(x)
+    broken = sorted((item(r) for r in today[today["kind"] == "broken"].itertuples(index=False)),
+                    key=lambda x: -(x["pct_chg"] or 0))
+    # When the limit-downs first and last sealed the lower limit, from the limit-down pools.
+    downs = today[today["kind"] == "down"]
+    ddetail = limit_detail.details(day, side="down").set_index("code") if len(downs) else pd.DataFrame()
+
+    def times(r) -> dict:
+        d = ddetail.loc[r.code] if r.code in ddetail.index else None
+        get = lambda k: None if d is None or pd.isna(d[k]) else d[k]  # noqa: E731
+        return {"first_time": get("first_time"), "last_time": get("last_time")}
+
+    down = sorted(({**item(r), **times(r)} for r in downs.itertuples(index=False)),
+                  key=lambda x: x["pct_chg"] or 0)
+    touched = len(up) + len(broken)
+    return {"date": day, "limit_up": len(up), "limit_down": len(down), "broken": len(broken),
+            "broken_rate": _trim(len(broken) / touched * 100) if touched else None,
+            "max_streak": max((x["streak"] for x in up), default=0),
+            "ladder": [{"streak": k, "stocks": v} for k, v in sorted(ladder.items(), reverse=True)],
+            "broken_list": broken, "down_list": down,
+            "detail_source": sorted(set(detail["source"])) if len(detail) else []}
 
 
 def _compound(window: list[str], base_rows: pd.DataFrame | None = None) -> pd.Series:

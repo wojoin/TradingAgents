@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
@@ -10,9 +10,10 @@ import InputIcon from 'primevue/inputicon'
 import Select from 'primevue/select'
 import DatePicker from 'primevue/datepicker'
 import Message from 'primevue/message'
-import { api, formatLots, formatPct, formatShares, formatYuan, upDownClass, type MarketCalendar, type MarketRow, type MarketTable } from '../api'
+import { ApiError, api, formatLots, formatPct, formatShares, formatYuan, upDownClass, type MarketCalendar, type MarketRow, type MarketSync, type MarketTable, type NotSynced } from '../api'
 import WatchStar from '../components/WatchStar.vue'
 import StockMenu from '../components/StockMenu.vue'
+import MarketStats from '../components/MarketStats.vue'
 import { useLongPress } from '../longPress'
 import { useWatchlist } from '../watchlist'
 
@@ -120,10 +121,74 @@ async function load(d?: string | null) {
     date.value = table.value.date
     picked.value = toDate(table.value.date)
   } catch (e) {
+    if (e instanceof ApiError && e.status === 409 && (e.detail as NotSynced)?.code === 'not_synced') {
+      loading.value = false
+      await needSync(e.detail as NotSynced)
+      return
+    }
     error.value = e instanceof Error ? e.message : String(e)
   } finally {
     loading.value = false
   }
+}
+
+// A closed trading day not on disk yet: sync it in the background (today's whole-market
+// quote, plus each stock's bars for any day skipped), show the progress, then show the day.
+// The newest day on disk stays on screen meanwhile.
+const sync = ref<MarketSync | null>(null)
+const wanted = ref<string | null>(null)     // the day the sync is for
+let pollTimer: number | undefined
+const syncing = computed(() => sync.value?.state === 'running')
+const syncLine = computed(() => sync.value?.lines.at(-1) || '')
+
+async function needSync(d: NotSynced) {
+  wanted.value = d.day
+  sync.value = d.sync
+  // A sync that failed for these same days waits for 重试 instead of starting over on every visit.
+  const failedHere = d.sync.state === 'error' && d.sync.days.join() === d.missing.join()
+  if (!failedHere && d.sync.state !== 'running') await startSync()
+  else if (d.sync.state === 'running') poll()
+  if (!table.value) load(cal.value?.latest || undefined)
+}
+
+async function startSync() {
+  try {
+    sync.value = await api.startMarketSync()
+  } catch (e) {
+    sync.value = { state: 'error', days: [], msg: e instanceof Error ? e.message : String(e), lines: [], started: null, finished: null }
+    return
+  }
+  if (sync.value.state === 'running') poll()
+  else if (sync.value.state === 'ok') done()
+}
+
+function poll() {
+  window.clearTimeout(pollTimer)
+  pollTimer = window.setTimeout(async () => {
+    try {
+      sync.value = await api.marketSync()
+    } catch {
+      /* the server may be restarting: try again */
+    }
+    if (sync.value?.state === 'running') poll()
+    else if (sync.value?.state === 'ok') done()
+  }, 2000)
+}
+
+async function done() {
+  cal.value = await api.marketCalendar().catch(() => cal.value)
+  const day = wanted.value
+  wanted.value = null
+  sync.value = null
+  if (day) load(day)
+}
+
+onBeforeUnmount(() => window.clearTimeout(pollTimer))
+
+// An industry picked under the table: filter the table to it and go back up to it.
+function showIndustry(name: string) {
+  industry.value = name
+  window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
 function pick(d: Date | Date[] | (Date | null)[] | null | undefined) {
@@ -131,155 +196,178 @@ function pick(d: Date | Date[] | (Date | null)[] | null | undefined) {
 }
 
 onMounted(async () => {
-  load()
   if (universe.value === 'hs300') loadHs300()
+  // Open on the latest closed trading day, synced first when it is not on disk yet.
   cal.value = await api.marketCalendar().catch(() => null)
+  load(cal.value?.max || undefined)
 })
 </script>
 
 <template>
-  <!-- One screen: the table fills what the page leaves, the notes sit at the very bottom. -->
-  <div class="page fill">
-    <Message v-if="error" severity="error" class="gap">行情加载失败：{{ error }}</Message>
-    <div class="card fill-card" v-on="press.handlers">
-      <DataTable
-        ref="dt"
-        v-model:filters="filters"
-        :value="rows"
-        :loading="loading"
-        data-key="code"
-        sort-mode="multiple"
-        removable-sort
-        :multi-sort-meta="[{ field: 'pct_chg', order: -1 }]"
-        scrollable
-        scroll-height="flex"
-        :virtual-scroller-options="{ itemSize: ROW_HEIGHT }"
-        table-style="table-layout: fixed; min-width: 2036px"
-        :global-filter-fields="['code', 'name', 'industry', 'sub_industry']"
-        :export-filename="`a-share-market-${date}`"
-        striped-rows
-        size="small"
-        row-hover
-        context-menu
-        class="market"
-        @row-click="(e) => !press.swallowed() && router.push(`/stock/${e.data.code}`)"
-        @row-contextmenu="(e) => stockMenu?.open(e.originalEvent, e.data.code, e.data.name)"
-      >
-        <template #header>
-          <div class="row between">
-            <div class="row">
-              <Select v-model="universe" :options="UNIVERSES" option-label="label" option-value="value" class="universe" />
-              <DatePicker v-model="picked" date-format="yy-mm-dd" show-icon :manual-input="false" class="date"
-                          :min-date="cal?.min ? toDate(cal.min) : undefined" :max-date="cal?.max ? toDate(cal.max) : undefined"
-                          :disabled-dates="holidays" :disabled-days="[0, 6]" :disabled="loading"
-                          @update:model-value="pick" />
-              <span v-if="loading" class="muted small"><i class="pi pi-spin pi-spinner" /> 载入中（历史日期首次约需数秒）</span>
-              <span v-else-if="table" class="muted">
-                {{ industry ? `${industry} ` : '' }}共 {{ breadth.total }} 只 · <span class="up">涨 {{ breadth.up }}</span> ·
-                <span class="down">跌 {{ breadth.down }}</span> · 平 {{ breadth.flat }}
-              </span>
-              <span v-if="table?.ttm" class="muted small">TTM：{{ table.ttm }}</span>
-            </div>
-            <div class="row">
-              <Select v-model="industry" :options="industries" placeholder="全部行业" show-clear filter class="industry" />
-              <IconField>
-                <InputIcon class="pi pi-search" />
-                <InputText v-model="filters.global.value" placeholder="代码、名称或行业" />
-              </IconField>
-              <Button label="导出 CSV" icon="pi pi-file-export" severity="secondary" outlined @click="dt?.exportCSV()" />
-            </div>
-          </div>
-
-        </template>
-        <template #empty><span class="muted">没有匹配的股票</span></template>
-        <!-- The row's position as shown, after sorting and filtering: 1, 2, 3 ... from the top. -->
-        <Column header="" :exportable="false" header-class="nr" body-class="nr seq" style="width: 60px">
-          <template #body="{ index }">{{ index + 1 }}</template>
-        </Column>
-        <Column header="" :exportable="false" header-class="txt" body-class="txt" style="width: 44px">
-          <template #body="{ data }"><WatchStar :code="data.code" /></template>
-        </Column>
-        <Column field="code" header="代码" sortable header-class="txt" body-class="txt num" style="width: 80px">
-          <template #body="{ data }"><span :data-code="data.code">{{ data.code }}</span></template>
-        </Column>
-        <Column field="name" header="名称" sortable header-class="txt" body-class="txt" style="width: 100px">
-          <template #body="{ data }">
-            <strong>{{ data.name }}</strong>
-            <i v-if="watchlist.state.notes[data.code]" class="pi pi-file-edit note-mark" :title="watchlist.state.notes[data.code].text" />
+  <!-- The table fills one screen; below it the market's stats, and the notes at the very bottom. -->
+  <div class="page sides">
+    <div class="fill">
+      <Message v-if="error" severity="error" class="gap">行情加载失败：{{ error }}</Message>
+      <Message v-if="sync && wanted" :severity="sync.state === 'error' ? 'warn' : 'info'" class="gap">
+        <div class="row">
+          <template v-if="syncing">
+            <i class="pi pi-spin pi-spinner" />
+            <span>正在同步 {{ (sync.days.length ? sync.days : [wanted]).join('、') }} 的行情（首次补漏掉的交易日需逐只下载，约几分钟），完成后自动显示 {{ wanted }}</span>
+            <span v-if="syncLine" class="muted small">{{ syncLine }}</span>
           </template>
-        </Column>
-        <Column field="pct_chg" header="涨幅" sortable header-class="nr" body-class="nr" style="width: 84px">
-          <template #body="{ data }"><span :class="upDownClass(data.pct_chg)">{{ formatPct(data.pct_chg) }}</span></template>
-        </Column>
-        <Column field="price" header="现价" sortable header-class="nr" body-class="nr" style="width: 84px">
-          <template #body="{ data }"><span :class="upDownClass(data.pct_chg)">{{ fix(data.price) }}</span></template>
-        </Column>
-        <Column field="main_flow" :header="table?.flow.label || '主力净流入'" sortable header-class="nr" body-class="nr" style="width: 140px">
-          <template #body="{ data }"><span :class="upDownClass(data.main_flow)">{{ formatYuan(data.main_flow, true) }}</span></template>
-        </Column>
-        <Column field="open_pct" header="开盘涨幅" sortable header-class="nr" body-class="nr" style="width: 90px">
-          <template #body="{ data }"><span :class="upDownClass(data.open_pct)">{{ formatPct(data.open_pct) }}</span></template>
-        </Column>
-        <Column field="high" header="最高" sortable header-class="nr" body-class="nr" style="width: 84px">
-          <template #body="{ data }">{{ fix(data.high) }}</template>
-        </Column>
-        <Column field="low" header="最低" sortable header-class="nr" body-class="nr" style="width: 84px">
-          <template #body="{ data }">{{ fix(data.low) }}</template>
-        </Column>
-        <Column field="amount" header="成交额" sortable header-class="nr" body-class="nr" style="width: 96px">
-          <template #body="{ data }">{{ formatYuan(data.amount) }}</template>
-        </Column>
-        <Column field="volume" header="成交量" sortable header-class="nr" body-class="nr" style="width: 104px">
-          <template #body="{ data }">{{ formatLots(data.volume) }}</template>
-        </Column>
-        <Column field="pct_5d" header="5日涨幅" sortable header-class="nr" body-class="nr" style="width: 90px">
-          <template #body="{ data }"><span :class="upDownClass(data.pct_5d)">{{ formatPct(data.pct_5d) }}</span></template>
-        </Column>
-        <Column field="amplitude" header="振幅" sortable header-class="nr" body-class="nr" style="width: 84px">
-          <template #body="{ data }">{{ formatPct(data.amplitude, false) }}</template>
-        </Column>
-        <Column field="industry" header="所属行业" sortable header-class="txt" body-class="txt" style="width: 100px">
-          <template #body="{ data }"><span :title="data.sub_industry || ''">{{ data.industry || '—' }}</span></template>
-        </Column>
-        <Column field="turnover" header="换手率%" sortable header-class="nr" body-class="nr" style="width: 84px">
-          <template #body="{ data }">{{ fix(data.turnover) }}</template>
-        </Column>
-        <Column field="pe_ttm" header="市盈TTM" sortable header-class="nr" body-class="nr" style="width: 90px">
-          <template #body="{ data }">{{ fix(data.pe_ttm) }}</template>
-        </Column>
-        <Column field="eps_ttm" header="每股收益TTM" sortable header-class="nr" body-class="nr" style="width: 110px">
-          <template #body="{ data }">{{ fix(data.eps_ttm, 3) }}</template>
-        </Column>
-        <Column field="total_mv" header="总市值" sortable header-class="nr" body-class="nr" style="width: 96px">
-          <template #body="{ data }">{{ formatYuan(data.total_mv) }}</template>
-        </Column>
-        <Column field="total_shares" header="总股本" sortable header-class="nr" body-class="nr" style="width: 90px">
-          <template #body="{ data }">{{ formatShares(data.total_shares) }}</template>
-        </Column>
-        <Column field="float_mv" header="流通值" sortable header-class="nr" body-class="nr" style="width: 96px">
-          <template #body="{ data }">{{ formatYuan(data.float_mv) }}</template>
-        </Column>
-        <Column field="float_shares" header="流通股" sortable header-class="nr" body-class="nr" style="width: 90px">
-          <template #body="{ data }">{{ formatShares(data.float_shares) }}</template>
-        </Column>
-      </DataTable>
-      <StockMenu ref="stockMenu" extras />
-      <!-- The bottom bar: what the figures rest on. -->
-      <div class="bottom">
-        <span v-if="universe === 'hs300' && hs300?.asOf" class="muted small">成分股名单 {{ hs300.asOf }}（中证指数公司）</span>
-        <span v-if="universeError" class="bad small">{{ universeError }}</span>
-        <span class="notes">
-          <span v-if="table && table.flow.source !== 'eastmoney'" class="muted small"><i class="pi pi-info-circle" /> {{ table.flow.note }}</span>
-          <span v-if="table?.note" class="muted small"><i class="pi pi-info-circle" /> {{ table.note }}</span>
-        </span>
+          <template v-else-if="sync.state === 'error'">
+            <span>{{ wanted }} 的行情同步失败：{{ sync.msg || '未知原因' }}</span>
+            <Button label="重试" icon="pi pi-refresh" size="small" text @click="startSync" />
+          </template>
+        </div>
+      </Message>
+      <div class="card fill-card" v-on="press.handlers">
+        <DataTable
+          ref="dt"
+          v-model:filters="filters"
+          :value="rows"
+          :loading="loading"
+          data-key="code"
+          sort-mode="multiple"
+          removable-sort
+          :multi-sort-meta="[{ field: 'pct_chg', order: -1 }]"
+          scrollable
+          scroll-height="flex"
+          :virtual-scroller-options="{ itemSize: ROW_HEIGHT }"
+          table-style="table-layout: fixed; min-width: 2036px"
+          :global-filter-fields="['code', 'name', 'industry', 'sub_industry']"
+          :export-filename="`a-share-market-${date}`"
+          striped-rows
+          size="small"
+          row-hover
+          context-menu
+          class="market"
+          @row-click="(e) => !press.swallowed() && router.push(`/stock/${e.data.code}`)"
+          @row-contextmenu="(e) => stockMenu?.open(e.originalEvent, e.data.code, e.data.name)"
+        >
+          <template #header>
+            <div class="row between">
+              <div class="row">
+                <Select v-model="universe" :options="UNIVERSES" option-label="label" option-value="value" class="universe" />
+                <DatePicker v-model="picked" date-format="yy-mm-dd" show-icon :manual-input="false" class="date"
+                            :min-date="cal?.min ? toDate(cal.min) : undefined" :max-date="cal?.max ? toDate(cal.max) : undefined"
+                            :disabled-dates="holidays" :disabled-days="[0, 6]" :disabled="loading"
+                            @update:model-value="pick" />
+                <span v-if="loading" class="muted small"><i class="pi pi-spin pi-spinner" /> 载入中（历史日期首次约需数秒）</span>
+                <span v-else-if="table" class="muted">
+                  {{ industry ? `${industry} ` : '' }}共 {{ breadth.total }} 只 · <span class="up">涨 {{ breadth.up }}</span> ·
+                  <span class="down">跌 {{ breadth.down }}</span> · 平 {{ breadth.flat }}
+                </span>
+                <span v-if="table?.ttm" class="muted small">TTM：{{ table.ttm }}</span>
+              </div>
+              <div class="row">
+                <Select v-model="industry" :options="industries" placeholder="全部行业" show-clear filter class="industry" />
+                <IconField>
+                  <InputIcon class="pi pi-search" />
+                  <InputText v-model="filters.global.value" placeholder="代码、名称或行业" />
+                </IconField>
+                <Button label="导出 CSV" icon="pi pi-file-export" severity="secondary" outlined @click="dt?.exportCSV()" />
+              </div>
+            </div>
+
+          </template>
+          <template #empty><span class="muted">没有匹配的股票</span></template>
+          <!-- The row's position as shown, after sorting and filtering: 1, 2, 3 ... from the top. -->
+          <Column frozen header="" :exportable="false" header-class="nr" body-class="nr seq" style="width: 60px">
+            <template #body="{ index }">{{ index + 1 }}</template>
+          </Column>
+          <Column frozen header="" :exportable="false" header-class="txt" body-class="txt" style="width: 44px">
+            <template #body="{ data }"><WatchStar :code="data.code" /></template>
+          </Column>
+          <Column frozen field="code" header="代码" sortable header-class="txt" body-class="txt num" style="width: 80px">
+            <template #body="{ data }"><span :data-code="data.code">{{ data.code }}</span></template>
+          </Column>
+          <Column frozen field="name" header="名称" sortable header-class="txt frozen-edge" body-class="txt frozen-edge" style="width: 100px">
+            <template #body="{ data }">
+              <strong>{{ data.name }}</strong>
+              <i v-if="watchlist.state.notes[data.code]" class="pi pi-file-edit note-mark" :title="watchlist.state.notes[data.code].text" />
+            </template>
+          </Column>
+          <Column field="pct_chg" header="涨幅" sortable header-class="nr" body-class="nr" style="width: 84px">
+            <template #body="{ data }"><span :class="upDownClass(data.pct_chg)">{{ formatPct(data.pct_chg) }}</span></template>
+          </Column>
+          <Column field="price" header="现价" sortable header-class="nr" body-class="nr" style="width: 84px">
+            <template #body="{ data }"><span :class="upDownClass(data.pct_chg)">{{ fix(data.price) }}</span></template>
+          </Column>
+          <Column field="main_flow" :header="table?.flow.label || '主力净流入'" sortable header-class="nr" body-class="nr" style="width: 140px">
+            <template #body="{ data }"><span :class="upDownClass(data.main_flow)">{{ formatYuan(data.main_flow, true) }}</span></template>
+          </Column>
+          <Column field="open_pct" header="开盘涨幅" sortable header-class="nr" body-class="nr" style="width: 90px">
+            <template #body="{ data }"><span :class="upDownClass(data.open_pct)">{{ formatPct(data.open_pct) }}</span></template>
+          </Column>
+          <Column field="high" header="最高" sortable header-class="nr" body-class="nr" style="width: 84px">
+            <template #body="{ data }">{{ fix(data.high) }}</template>
+          </Column>
+          <Column field="low" header="最低" sortable header-class="nr" body-class="nr" style="width: 84px">
+            <template #body="{ data }">{{ fix(data.low) }}</template>
+          </Column>
+          <Column field="amount" header="成交额" sortable header-class="nr" body-class="nr" style="width: 96px">
+            <template #body="{ data }">{{ formatYuan(data.amount) }}</template>
+          </Column>
+          <Column field="volume" header="成交量" sortable header-class="nr" body-class="nr" style="width: 104px">
+            <template #body="{ data }">{{ formatLots(data.volume) }}</template>
+          </Column>
+          <Column field="pct_5d" header="5日涨幅" sortable header-class="nr" body-class="nr" style="width: 90px">
+            <template #body="{ data }"><span :class="upDownClass(data.pct_5d)">{{ formatPct(data.pct_5d) }}</span></template>
+          </Column>
+          <Column field="amplitude" header="振幅" sortable header-class="nr" body-class="nr" style="width: 84px">
+            <template #body="{ data }">{{ formatPct(data.amplitude, false) }}</template>
+          </Column>
+          <Column field="industry" header="所属行业" sortable header-class="txt" body-class="txt" style="width: 100px">
+            <template #body="{ data }"><span :title="data.sub_industry || ''">{{ data.industry || '—' }}</span></template>
+          </Column>
+          <Column field="turnover" header="换手率%" sortable header-class="nr" body-class="nr" style="width: 84px">
+            <template #body="{ data }">{{ fix(data.turnover) }}</template>
+          </Column>
+          <Column field="pe_ttm" header="市盈TTM" sortable header-class="nr" body-class="nr" style="width: 90px">
+            <template #body="{ data }">{{ fix(data.pe_ttm) }}</template>
+          </Column>
+          <Column field="eps_ttm" header="每股收益TTM" sortable header-class="nr" body-class="nr" style="width: 110px">
+            <template #body="{ data }">{{ fix(data.eps_ttm, 3) }}</template>
+          </Column>
+          <Column field="total_mv" header="总市值" sortable header-class="nr" body-class="nr" style="width: 96px">
+            <template #body="{ data }">{{ formatYuan(data.total_mv) }}</template>
+          </Column>
+          <Column field="total_shares" header="总股本" sortable header-class="nr" body-class="nr" style="width: 90px">
+            <template #body="{ data }">{{ formatShares(data.total_shares) }}</template>
+          </Column>
+          <Column field="float_mv" header="流通值" sortable header-class="nr" body-class="nr" style="width: 96px">
+            <template #body="{ data }">{{ formatYuan(data.float_mv) }}</template>
+          </Column>
+          <Column field="float_shares" header="流通股" sortable header-class="nr" body-class="nr" style="width: 90px">
+            <template #body="{ data }">{{ formatShares(data.float_shares) }}</template>
+          </Column>
+        </DataTable>
+        <StockMenu ref="stockMenu" extras />
       </div>
+    </div>
+    <MarketStats :rows="table?.rows || []" :date="date" @industry="showIndustry" />
+    <!-- The bottom bar: what the figures rest on. -->
+    <div class="bottom">
+      <span v-if="universe === 'hs300' && hs300?.asOf" class="muted small">成分股名单 {{ hs300.asOf }}（中证指数公司）</span>
+      <span v-if="universeError" class="bad small">{{ universeError }}</span>
+      <span class="notes">
+        <span v-if="table && table.flow.source !== 'eastmoney'" class="muted small"><i class="pi pi-info-circle" /> {{ table.flow.note }}</span>
+        <span v-if="table?.note" class="muted small"><i class="pi pi-info-circle" /> {{ table.note }}</span>
+      </span>
     </div>
   </div>
 </template>
 
 <style scoped>
+/* 序号、星标、代码、名称 stay put while the table scrolls sideways; a line marks where they end. */
+.market :deep(.frozen-edge) { box-shadow: inset -1px 0 0 var(--p-datatable-body-cell-border-color, #e2e8f0); }
+
+/* 30px either side of the table (and the stats under it); the usual margin on a phone. */
+.sides { padding-left: 30px; padding-right: 30px; }
+@media (max-width: 760px) { .sides { padding-left: 12px; padding-right: 12px; } }
 .gap { margin-bottom: 12px; }
-.fill { height: 100vh; display: flex; flex-direction: column; padding-bottom: 8px; }
+.fill { height: calc(100vh - 12px); display: flex; flex-direction: column; }
 .fill-card { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .fill-card > :deep(.market) { flex: 1; min-height: 0; }
 .bottom { flex: none; }
@@ -292,7 +380,7 @@ onMounted(async () => {
 .date { width: 160px; }
 .industry { width: 170px; }
 .note { margin-top: 8px; font-size: 12px; }
-.bottom { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.bottom { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); }
 .universe { width: 130px; }
 .notes { display: flex; flex-direction: column; gap: 2px; margin-left: auto; text-align: right; }
 .bottom:empty { display: none; }
