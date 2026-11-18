@@ -375,12 +375,13 @@ const erpLines = computed<Line[]>(() => {
       </span>
     </div>
     <p v-if="flowError" class="bad small">{{ flowError }}</p>
-    <p v-else-if="flowLoading && !flowData" class="muted small"><i class="pi pi-spin pi-spinner" /> 统计中（5日、10日首次需下载全市场排行，约 5 秒）</p>
+    <p v-else-if="flowLoading && !flowData" class="muted small"><i class="pi pi-spin pi-spinner" /> 统计中（5日、10日首次需下载全市场排行，最长约 30 秒）</p>
     <p v-else-if="!flows.any" class="muted small sub">{{ flowData?.note || `${date} 没有资金流数据` }}</p>
     <template v-else>
-      <p class="sum">{{ flowData?.date }} {{ spanLabel }}主力净流入合计 <b :class="cls(flows.total)">{{ formatYuan(flows.total, true) }}</b> ·
+      <p class="sum">{{ flowData?.date }} {{ spanLabel }}{{ flowData?.label || '主力净流入' }}合计 <b :class="cls(flows.total)">{{ formatYuan(flows.total, true) }}</b> ·
         流入 {{ flows.inCount }} 个行业，流出 {{ flows.outCount }} 个</p>
-      <p class="muted small sub">东方财富主力（超大单 + 大单）净流入，各股求和到申万行业；5日、10日只有最近一个交易日能取到。
+      <p v-if="flowData?.source === 'ths'" class="warn small sub"><i class="pi pi-info-circle" /> 东方财富暂不可用，改用{{ flowData.source_note }}。</p>
+      <p class="muted small sub">{{ flowData?.source === 'ths' ? '同花顺' : '东方财富主力（超大单 + 大单）' }}净流入，各股求和到申万行业；5日、10日只有最近一个交易日能取到。
         <b>多日持续净流入</b>比单日更可靠。</p>
       <div class="flow">
         <div>
@@ -417,6 +418,7 @@ h3 { margin: 0; font-size: 15px; }
 .cbar { display: inline-block; width: 60px; height: 8px; background: #f1f3f6; border-radius: 4px; overflow: hidden; margin-right: 6px; vertical-align: middle; }
 .cfill { display: block; height: 100%; border-radius: 4px; }
 .hot { color: #c2410c; }
+.warn { color: #b45309; }
 .btns { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .spans { margin-top: 8px; }
 .link { cursor: pointer; }

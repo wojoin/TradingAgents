@@ -440,18 +440,29 @@ def _span_stats(span: list[str]) -> tuple[pd.DataFrame, pd.DataFrame]:
 BENCHMARKS = {"上证指数": ("sh_comp", "sh000001"), "沪深300": ("idx_hs300", "sh000300"),
               "中证500": ("idx_zz500", "sh000905"), "中证1000": ("idx_zz1000", "sh000852"),
               "创业板指": ("idx_cyb", "sz399006"), "创业板综": ("idx_cybz", "sz399102"),
-              "科创综指": ("idx_kcz", "sh000680")}
+              "科创综指": ("idx_kcz", "sh000680"), "科创50": ("idx_kc50", "sh000688")}
 _INDEX_MEMO: dict[tuple[str, str], pd.DataFrame] = {}
 
 
+def _index_daily(symbol: str, start: str) -> pd.DataFrame:
+    """An index's daily bars from ``start`` (YYYYMMDD): Eastmoney, or Sina when Eastmoney fails
+    (it rate-limits an IP that asks too often; Sina sends the whole history, cut here)."""
+    try:
+        return store.ak().stock_zh_index_daily_em(symbol=symbol, start_date=start)
+    except Exception as e:  # noqa: BLE001
+        df = store.ak().stock_zh_index_daily(symbol=symbol)
+        if df is None or not len(df):
+            raise LookupError(f"{symbol}: Eastmoney {type(e).__name__}, Sina empty") from e
+        return df[pd.to_datetime(df["date"]) >= pd.Timestamp(start)].reset_index(drop=True)
+
+
 def index_closes(name: str) -> pd.DataFrame:
-    """An index's daily closes (date, close), kept up to date in ``ts/`` (Eastmoney), at most
-    one download per index per closed trading day."""
+    """An index's daily closes (date, close), kept up to date in ``ts/`` (Eastmoney, or Sina when
+    Eastmoney fails), at most one download per index per closed trading day."""
     series, symbol = BENCHMARKS[name]
     key = (series, last_closed_day())
     if key not in _INDEX_MEMO:
-        df = store.incremental(series, lambda s: store.ak().stock_zh_index_daily_em(symbol=symbol, start_date=s),
-                               "date", "20240101")
+        df = store.incremental(series, lambda s: _index_daily(symbol, s), "date", "20240101")
         _INDEX_MEMO[key] = pd.DataFrame({"date": store.to_local_dates(df["date"]).dt.strftime("%Y-%m-%d"),
                                          "close": pd.to_numeric(df["close"], errors="coerce")}).dropna()
     return _INDEX_MEMO[key]

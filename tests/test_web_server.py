@@ -704,8 +704,24 @@ def test_index_closes_come_from_the_local_series_and_start_the_day_before(mkt, m
     assert st["index_base"] == "2026-11-12" and st["index_error"] is None
     assert st["indexes"]["沪深300"] == [{"date": "2026-11-12", "close": 101.0}, {"date": "2026-11-13", "close": 99.0}]
     market.market_stats("2026-11-13", "60d")
-    assert sorted(calls) == ["sh000001", "sh000300", "sh000680", "sh000852", "sh000905", "sz399006", "sz399102"], "once per index per day"
+    assert sorted(calls) == ["sh000001", "sh000300", "sh000680", "sh000688", "sh000852", "sh000905", "sz399006", "sz399102"], "once per index per day"
     market._INDEX_MEMO.clear()
+
+
+def test_index_closes_fall_back_to_sina_when_eastmoney_fails(monkeypatch):
+    import pandas as pd
+
+    from web.server import market
+
+    class Fake:
+        def stock_zh_index_daily_em(self, symbol, start_date):
+            raise ConnectionError("Push2RateLimitError")
+
+        def stock_zh_index_daily(self, symbol):
+            return pd.DataFrame({"date": ["2026-11-05", "2026-11-12", "2026-11-13"], "close": [1.0, 2.0, 3.0]})
+    monkeypatch.setattr(market.store, "ak", lambda: Fake())
+    got = market._index_daily("sh000688", "20261110")
+    assert got["close"].tolist() == [2.0, 3.0], "Sina's whole history, cut at the start"
 
 
 @pytest.mark.parametrize("end, rng, start", [
@@ -1120,9 +1136,36 @@ def test_industry_flow_sums_by_shenwan_industry(monkeypatch):
     assert got["sw1"] == [{"name": "电子", "flow": 2e8}, {"name": "银行", "flow": -5e8}], "a stock without an industry left out"
     assert got["sw2"][0] == {"name": "电子-半导体", "flow": 3e8}
     none = extras.industry_flow(None, "10d", stock_flow=lambda day, span: None)
-    assert not none["available"] and "只有最近一个交易日" in none["note"]
+    assert not none["available"] and "都暂不可用" in none["note"], "the latest day: both feeds failed"
+    monkeypatch.setattr(market, "last_closed_day", lambda: "2026-11-18")
+    old = extras.industry_flow(None, "10d", stock_flow=lambda day, span: None)
+    assert "只有最近一个交易日" in old["note"], "an earlier day: never to be had"
     with pytest.raises(ValueError):
         extras.industry_flow(None, "3d", stock_flow=lambda day, span: flows)
+    ths = extras.industry_flow(None, "5d", stock_flow=lambda day, span: (flows, "ths"))
+    assert ths["source"] == "ths" and "同花顺口径" in ths["source_note"] and ths["label"] == "资金净流入（同花顺）"
+    assert got["source"] == "eastmoney" and got["source_note"] is None
+
+
+def test_stock_flow_falls_back_to_tonghuashun(monkeypatch):
+    import datetime as dt
+
+    import pandas as pd
+
+    from web.server import extras
+
+    monkeypatch.setattr(extras.store, "last_closed_trade_date", lambda: dt.date(2026, 11, 18))
+    em = pd.Series([1.0], index=["000001"])
+    ths = pd.Series([2.0], index=["000001"])
+    monkeypatch.setattr(extras, "_em_flow", lambda day, span: em)
+    monkeypatch.setattr(extras, "_ths_flow", lambda day, span: ths)
+    assert extras._stock_flow("2026-11-18", "5d")[1] == "eastmoney"
+    monkeypatch.setattr(extras, "_em_flow", lambda day, span: None)        # Eastmoney rate-limited
+    flow, source = extras._stock_flow("2026-11-18", "10d")
+    assert source == "ths" and flow.iat[0] == 2.0
+    assert extras._stock_flow("2026-11-17", "5d") == (None, None), "an earlier day: neither keeps it"
+    monkeypatch.setattr(extras, "_ths_flow", lambda day, span: None)
+    assert extras._stock_flow("2026-11-18", "5d") == (None, None)
 
 
 def test_releases_and_the_lhb(monkeypatch, tmp_path):
@@ -1151,7 +1194,10 @@ def test_releases_and_the_lhb(monkeypatch, tmp_path):
                       "换手率": [5.7, 5.7, 9.5, 300.0], "解读": ["普通席位买入", "普通席位买入", None, None],
                       "上榜原因": ["日涨幅偏离值达7%", "连续三日涨幅偏离20%", "连续三日跌幅偏离20%", "转债异动"]})
     j = pd.DataFrame({"代码": ["000011"], "买方机构数": [0], "卖方机构数": [1], "机构买入净额": [-5e7]})
+    monkeypatch.setattr(market, "cross_section", lambda day: (day, pd.DataFrame(
+        {"code": ["000521", "000011"], "amount": [3.6e8, 7.5e8], "volume": [7.6e5, 1.08e6]})))
     lb = extras.lhb(None, detail=lambda k: d, inst=lambda k: j)
+    assert (lb["stocks"][0]["amount"], lb["stocks"][0]["volume"]) == (3.6e8, 7.6e5), "from the day's snapshot"
     assert lb["count"] == 2 and [x["code"] for x in lb["stocks"]] == ["000521", "000011"], "one row a stock, by net buying"
     assert lb["stocks"][0]["reason"] == "日涨幅偏离值达7%；连续三日涨幅偏离20%"
     assert (lb["inst_net"], lb["inst_count"]) == (-5e7, 1) and lb["stocks"][0]["inst_net"] is None
@@ -1205,3 +1251,49 @@ def test_industry_crowding_ranks_turnover_share_and_rate_against_their_history(m
     client = TestClient(create_app(RunManager(runner=lambda r, e: None), reports_root=tmp_path, watchlist_path=tmp_path / "w.json"))
     assert client.get(f"/api/market/crowding?end={days[-1]}").json()["industries"][0]["name"] == "传媒"
     sectors.invalidate()
+
+
+def test_the_daily_download_fetches_the_last_closed_day(monkeypatch):
+    from web.server import daily, market
+
+    monkeypatch.setattr(market, "last_closed_day", lambda: "2026-11-18")
+    monkeypatch.setattr(daily, "_setup_logging", lambda: None)
+    monkeypatch.setattr(daily, "server_up", lambda server: False)
+    runs = []
+    monkeypatch.setattr(daily, "in_process", lambda day: runs.append(day) or (0, 1))
+    assert daily.main([]) == 1 and runs == ["2026-11-18"], "something not out yet: says so"
+    monkeypatch.setattr(daily, "in_process", lambda day: runs.append(day) or (0, 0))
+    assert daily.main([]) == 0 and runs == ["2026-11-18"] * 2, "run again: fetches again"
+    monkeypatch.setattr(daily, "server_up", lambda server: True)
+    monkeypatch.setattr(daily, "via_server", lambda server, day: runs.append(("server", day)) or (0, 0))
+    assert daily.main([]) == 0 and runs[-1] == ("server", "2026-11-18"), "through the web server when it is up"
+
+
+def test_lhb_seats_merge_both_sides_and_count_each_institution_once(monkeypatch, tmp_path):
+    import pandas as pd
+
+    from web.server import extras, market
+
+    monkeypatch.setattr(market, "_days_on_record", lambda end: ["2026-11-17"])
+    cols = ["交易营业部名称", "买入金额", "买入金额-占总成交比例", "卖出金额", "卖出金额-占总成交比例", "类型"]
+    why = "日涨幅偏离值达到7%"
+    # 沪股通 is among both the buyers and the sellers, each list giving only its own side;
+    # two different institutions go by the one name 机构专用, one of them in both lists.
+    buy = pd.DataFrame([["沪股通专用", 1.8e8, 0.0385, None, None, why],
+                        ["机构专用", 7.0e7, 0.015, 1.0e7, 0.002, why],
+                        ["机构专用", 5.0e7, 0.010, 3.0e7, 0.006, why],
+                        ["某证券营业部", 2.0e7, 0.004, None, None, why]], columns=cols)
+    sell = pd.DataFrame([["沪股通专用", None, None, 9.0e7, 0.019, why],
+                         ["机构专用", 5.0e7, 0.010, 3.0e7, 0.006, why]], columns=cols)
+    r = extras.lhb_seats("600206", None, fetch=lambda flag: buy if flag == "买入" else sell)
+    g = r["groups"][0]
+    assert r["available"] and g["reason"] == why
+    hk = g["buy"][0]
+    assert (hk["kind"], hk["buy"], hk["sell"], hk["net"], hk["buy_share"]) == ("北向", 1.8e8, 9.0e7, 9.0e7, 3.85)
+    assert g["sell"][0]["net"] == 9.0e7, "the same seat, the same net, in either list"
+    assert g["inst_net"] == 6.0e7 + 2.0e7, "each institution once: 6000万 + 2000万"
+    assert (g["top_buy"], g["top_sell"]) == (3.2e8, 1.3e8), "every listed seat once, both sides of each"
+    none = extras.lhb_seats("600206", None, fetch=lambda flag: pd.DataFrame())
+    assert not none["available"]
+    client = TestClient(create_app(RunManager(runner=lambda r, e: None), reports_root=tmp_path, watchlist_path=tmp_path / "w.json"))
+    assert client.get("/api/market/lhb/60020x").status_code == 400

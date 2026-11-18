@@ -249,6 +249,9 @@ export interface IndustryFlow {
   span: FlowSpan
   available: boolean
   note?: string
+  source?: 'eastmoney' | 'ths'   // Eastmoney's main-force flow, or 同花顺's when Eastmoney fails
+  label?: string
+  source_note?: string | null    // what is different about 同花顺's measure
   total?: number | null
   sw1?: { name: string; flow: number | null }[]
   sw2?: { name: string; flow: number | null }[]
@@ -268,6 +271,8 @@ export interface LhbStock {
   name: string
   close: number | null
   pct: number | null
+  amount: number | null          // the day's amount traded (yuan)
+  volume: number | null          // and volume (lots, 手)
   net: number | null             // 龙虎榜净买额
   buy: number | null
   sell: number | null
@@ -278,6 +283,24 @@ export interface LhbStock {
   inst_buyers: number | null
   inst_sellers: number | null
   inst_net: number | null        // 机构买入净额
+}
+// A stock's top five buying and selling seats on its 龙虎榜 day, a set per listing reason.
+export interface LhbSeat {
+  seat: string
+  kind: '机构' | '北向' | '营业部'
+  buy: number | null
+  sell: number | null
+  net: number | null
+  buy_share: number | null       // of the stock's amount traded that day (%)
+  sell_share: number | null
+}
+export interface LhbSeats {
+  code: string
+  date: string
+  available: boolean
+  note?: string
+  groups: { reason: string; buy: LhbSeat[]; sell: LhbSeat[]; top_buy: number | null; top_sell: number | null;
+            top_net: number | null; inst_net: number | null }[]
 }
 export interface MarketLhb {
   date: string
@@ -504,6 +527,8 @@ export const api = {
   industryFlow: (span: FlowSpan, date?: string) =>
     request<IndustryFlow>(`/api/market/flow/industry?span=${span}${date ? `&date=${date}` : ''}`),
   marketReleases: (date?: string) => request<MarketReleases>(`/api/market/releases${date ? `?date=${date}` : ''}`),
+  marketLhbSeats: (code: string, date?: string) =>
+    request<LhbSeats>(`/api/market/lhb/${code}${date ? `?date=${date}` : ''}`),
   marketLhb: (date?: string) => request<MarketLhb>(`/api/market/lhb${date ? `?date=${date}` : ''}`),
   marketThemes: (days: number, date?: string) =>
     request<MarketThemes>(`/api/market/themes?days=${days}${date ? `&date=${date}` : ''}`),

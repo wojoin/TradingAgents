@@ -27,7 +27,7 @@ const FLAT = '#9aa4b2'
 const INK = '#111827'
 const INDEX_COLORS: Record<string, string> = {
   上证指数: '#2563eb', 沪深300: '#7c3aed', 中证500: '#db2777', 中证1000: '#0891b2',
-  创业板指: '#f59e0b', 创业板综: '#a16207', 科创综指: '#65a30d',
+  创业板指: '#f59e0b', 科创50: '#0d9488', 创业板综: '#a16207', 科创综指: '#65a30d',
 }
 
 // ---- The day's spread: by size of change, falls on the left, rises on the right ----
@@ -222,7 +222,7 @@ const adlLines = computed<Line[]>(() => {
 })
 // The summary in rows: large caps, the growth boards, mid and small caps, the median stock. A
 // click on one hides or shows its line; which are hidden is remembered in this browser.
-const INDEX_ROWS = [['上证指数', '沪深300'], ['创业板综', '科创综指', '创业板指'], ['中证500', '中证1000'], ['个股中位数']]
+const INDEX_ROWS = [['上证指数', '沪深300'], ['创业板综', '科创综指', '创业板指', '科创50'], ['中证500', '中证1000'], ['个股中位数']]
 const HIDDEN_KEY = 'market.indexHidden'
 const hidden = ref<string[]>((() => {
   try {

@@ -42,7 +42,7 @@ A browser front end for TradingAgents, with a left-hand menu:
   (连板天梯); and the Shenwan industries ranked (level 1 or 2; a level-1 name filters the
   table). Over the day, 60 trading days, six months or a year to it, each card with its own
   span: rises and falls, limit moves, 赚钱效应 (the median stock's change), the 上证指数,
-  沪深300, 中证500, 中证1000, 创业板指, 创业板综 and 科创综指 against the median stock with the advance-decline line, and the
+  沪深300, 中证500, 中证1000, 创业板指, 创业板综, 科创综指 and 科创50 against the median stock with the advance-decline line, and the
   amount traded. Limits follow the boards: main board 10%, ST 5% (10% from 2026-07-06),
   ChiNext and STAR 20%, Beijing 30% (its limit prices cut to the fen, the others round half
   up); a move past the limit is a day without one (a new listing) and is not counted. Base
@@ -82,7 +82,8 @@ A browser front end for TradingAgents, with a left-hand menu:
   market's main-force flow (Eastmoney, the last 120 trading days), main-force flow by 申万
   industry over 1, 5 or 10 days (Eastmoney's per-stock rankings, latest day only), the shares
   coming off lock-up in the next 30 days, and the day's 龙虎榜 with the institutions' buying
-  (kept in `.akshare_data/web/lhb/` once the day is closed). 情绪综合分 (`server/breadth.py`)
+  (kept in `.akshare_data/web/lhb/` once the day is closed); a row opens on the stock's top five
+  buying and selling seats (kept with the analysts' copy in `sentiment/lhb_seats/`). 情绪综合分 (`server/breadth.py`)
   averages six short-term readings put on 0–100.
 - **分析** (analysis): start an analysis from a stock code or name (a name resolves to
   its code, and an ambiguous one lists the candidates), follow every agent live, and
@@ -159,6 +160,22 @@ Open http://localhost:5173; Vite forwards `/api` to port 8765 (set `TA_API_PORT`
 
 Keep the server on `127.0.0.1`: it has no login, and every run spends model credits.
 
+## Download by hand
+
+The 行情 page syncs the day it opens on when that day is not on disk yet. To fetch ahead of
+time, run
+
+```bash
+.venv/bin/python -m web.server.daily
+```
+
+It brings the daily snapshots up to the last closed trading day (a trading day counts once it
+is past 15:30 Beijing time) and fetches once everything the 行情 stats read, so the page opens
+without waiting: through the web server when it is up (its own sync, then each stats endpoint),
+otherwise in its own process. What cannot be had yet (the 龙虎榜 before about 18:00, a feed
+that is down) is listed; run it again later for those. Log (Beijing time):
+`.akshare_data/web/daily.log`.
+
 ## API
 
 | Method | Path | |
@@ -177,6 +194,7 @@ Keep the server on `127.0.0.1`: it has no login, and every run spends model cred
 | GET | `/api/market/flow/industry` | `?span=1d\|5d\|10d&date=`: main-force flow by 申万 industry |
 | GET | `/api/market/releases` | `?date=`: lock-up expiries in the next 30 days |
 | GET | `/api/market/lhb` | `?date=`: the day's 龙虎榜 |
+| GET | `/api/market/lhb/{code}` | `?date=`: that stock's top five buying and selling seats |
 | GET | `/api/market/breadth` | `?range=&end=`: 涨停溢价 and 晋级率, size styles, new highs and lows, share above MAs |
 | GET | `/api/market/limits` | `?date=`: limit-ups by days in a row (with shape, reason, sealing times, orders), 炸板 and limit-downs |
 | GET / POST | `/api/market/sync` | the background snapshot sync: its status and progress, or start it |

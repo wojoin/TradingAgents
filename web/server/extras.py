@@ -269,22 +269,20 @@ def market_flow(end: str | None = None, rng: str = "60d", fetch=None) -> dict:
                      for r in part.to_dict("records")]}
 
 
-def _stock_flow(day: str, span: str) -> pd.Series | None:
-    """code -> main-force net inflow over ``span`` to ``day`` (5d / 10d: the latest day only)."""
-    if span == "1d":
-        flow, meta = market.main_flow(day)
-        return flow if meta.get("source") == "eastmoney" else None
+THS_NOTE = "同花顺口径：按主动买卖方向统计全部成交，不分主力，数值不能与东方财富主力净流入比较"
+_THS_SPANS = {"1d": ("即时", "now", "净额"), "5d": ("5日排行", "5d", "资金流入净额"), "10d": ("10日排行", "10d", "资金流入净额")}
+
+
+def _em_flow(day: str, span: str) -> pd.Series | None:
+    """Eastmoney's main-force net inflow (code -> yuan) over 5 or 10 days to ``day``."""
     from tradingagents.dataflows.vendors.akshare.sentiment import _dated
 
-    if pd.Timestamp(day).date() < store.last_closed_trade_date():
-        return None
     n = span[:-1]
-    key = day.replace("-", "")
     try:
-        df = _dated(f"em_fund_flow_{span}", key, not store.is_intraday(),
+        df = _dated(f"em_fund_flow_{span}", day.replace("-", ""), not store.is_intraday(),
                     lambda: store.ak().stock_individual_fund_flow_rank(indicator=f"{n}日"), f"Eastmoney {n}-day fund flow")
     except Exception as e:  # noqa: BLE001 — Eastmoney rate-limits
-        log.info("%s fund flow: %s", span, e)
+        log.info("%s Eastmoney fund flow: %s", span, e)
         return None
     col = f"{n}日主力净流入-净额"
     if df is None or col not in df:
@@ -294,14 +292,53 @@ def _stock_flow(day: str, span: str) -> pd.Series | None:
     return s
 
 
+def _ths_flow(day: str, span: str) -> pd.Series | None:
+    """同花顺's net inflow (code -> yuan) over ``span`` to ``day``: its tables carry no history,
+    so the latest session only. Shared with the analysts' copy (``sentiment/ths_fund_flow_*``)."""
+    from tradingagents.dataflows.vendors.akshare.insiders import cn_number
+    from tradingagents.dataflows.vendors.akshare.sentiment import _dated
+
+    symbol, key, col = _THS_SPANS[span]
+    try:
+        df = _dated(f"ths_fund_flow_{key}", day.replace("-", ""), not store.is_intraday(),
+                    lambda: store.ak().stock_fund_flow_individual(symbol=symbol), "同花顺 fund flow")
+    except Exception as e:  # noqa: BLE001
+        log.info("%s 同花顺 fund flow: %s", span, e)
+        return None
+    if df is None or col not in df or "股票代码" not in df:
+        return None
+    s = df[col].map(cn_number).astype(float)
+    s.index = df["股票代码"].astype(str).str.zfill(6)
+    return s
+
+
+def _stock_flow(day: str, span: str) -> tuple[pd.Series | None, str | None]:
+    """(code -> net inflow over ``span`` to ``day``, its source: eastmoney / ths). Eastmoney's
+    main-force flow first; 同花顺's when Eastmoney fails. The latest closed day only, but for a
+    day's own Eastmoney table already kept."""
+    if span == "1d":
+        flow, meta = market.main_flow(day)        # Eastmoney, or 同花顺 when Eastmoney fails
+        return (flow, meta.get("source")) if flow is not None else (None, None)
+    if pd.Timestamp(day).date() < store.last_closed_trade_date():
+        return None, None
+    em = _em_flow(day, span)
+    if em is not None and len(em):
+        return em, "eastmoney"
+    ths = _ths_flow(day, span)
+    return (ths, "ths") if ths is not None and len(ths) else (None, None)
+
+
 def industry_flow(date: str | None = None, span: str = "1d", stock_flow=None) -> dict:
-    """Main-force net inflow summed by 申万一级 and 二级 industry over ``span``."""
+    """Net inflow summed by 申万一级 and 二级 industry over ``span``: Eastmoney's main-force flow,
+    or 同花顺's (a different measure, said so in the reply) when Eastmoney fails."""
     if span not in FLOW_SPANS:
         raise ValueError(f"span must be one of {', '.join(FLOW_SPANS)}")
     day = market._days_on_record(date)[-1]
-    flow = (stock_flow or _stock_flow)(day, span)
+    got = (stock_flow or _stock_flow)(day, span)
+    flow, source = got if isinstance(got, tuple) else (got, "eastmoney")
     if flow is None or not len(flow):
-        why = "只有最近一个交易日能取到" if span != "1d" or day < market.last_closed_day() else "东方财富资金流暂不可用"
+        why = ("只有最近一个交易日能取到" if day < market.last_closed_day()
+               else "东方财富与同花顺资金流都暂不可用，稍后再试")
         return {"date": day, "span": span, "available": False, "note": f"{day} 的{span.replace('d', '日')}资金流不可得：{why}"}
     sectors = market.industries()
     df = pd.DataFrame({"flow": flow.groupby(level=0).last()})
@@ -312,7 +349,9 @@ def industry_flow(date: str | None = None, span: str = "1d", stock_flow=None) ->
         return [{"name": k, "flow": _r(v, 0)} for k, v in g.items()]
     sw2 = df.dropna(subset=["sw2"]).assign(key=lambda x: x["sw1"].fillna("") + "-" + x["sw2"])
     g2 = sw2.groupby("key")["flow"].sum().sort_values(ascending=False)
-    return {"date": day, "span": span, "available": True, "total": _r(df["flow"].sum(), 0),
+    return {"date": day, "span": span, "available": True, "source": source,
+            "label": "主力净流入" if source == "eastmoney" else "资金净流入（同花顺）",
+            "source_note": None if source == "eastmoney" else THS_NOTE, "total": _r(df["flow"].sum(), 0),
             "sw1": by("sw1"), "sw2": [{"name": k.lstrip("-"), "flow": _r(v, 0)} for k, v in g2.items()]}
 
 
@@ -397,7 +436,16 @@ def lhb(date: str | None = None, detail=None, inst=None) -> dict:
         if day < market.last_closed_day() or not store.is_intraday():
             path.parent.mkdir(parents=True, exist_ok=True)
             df.to_parquet(path)
+    # The day's amount traded and volume (lots), from the market snapshot as in the 行情 table.
+    try:
+        _, xs = market.cross_section(day)
+        xs = xs.assign(code=xs["code"].astype(str).str.zfill(6)).drop_duplicates("code").set_index("code")
+        amount = pd.to_numeric(xs["amount"], errors="coerce")
+        volume = pd.to_numeric(xs["volume"], errors="coerce")
+    except Exception:  # noqa: BLE001 — the list without them
+        amount = volume = pd.Series(dtype=float)
     stocks = [{"code": r["code"], "name": r["name"], "close": _r(r["close"]), "pct": _r(r["pct"]),
+               "amount": _r(amount.get(r["code"]), 0), "volume": _r(volume.get(r["code"]), 0),
                "net": _r(r["net"], 0), "buy": _r(r["buy"], 0), "sell": _r(r["sell"], 0), "net_share": _r(r["net_share"]),
                "turnover": _r(r["turnover"]), "note": _text(r["note"]), "reason": _text(r["reason"]),
                "inst_buyers": None if pd.isna(r["inst_buyers"]) else int(r["inst_buyers"]),
@@ -408,3 +456,78 @@ def lhb(date: str | None = None, detail=None, inst=None) -> dict:
     return {"date": day, "available": True, "count": len(stocks), "net": _r(sum(x["net"] or 0 for x in stocks), 0),
             "inst_net": _r(sum(inst), 0) if inst else None,
             "inst_count": sum(1 for x in stocks if (x["inst_buyers"] or 0) + (x["inst_sellers"] or 0) > 0), "stocks": stocks}
+
+
+def _seat_kind(name: str) -> str:
+    if "机构专用" in name:
+        return "机构"
+    if "股通专用" in name:          # 沪股通专用 / 深股通专用: northbound money through Stock Connect
+        return "北向"
+    return "营业部"
+
+
+def lhb_seats(code: str, date: str | None = None, fetch=None) -> dict:
+    """The top five buying and top five selling seats of ``code`` on its 龙虎榜 day, by listing
+    reason (a stock listed for two reasons has two sets). Kept with the analysts' copy, under
+    ``sentiment/lhb_seats``, once the day is closed."""
+    from tradingagents.dataflows.vendors.akshare.sentiment import _closed, _dated
+
+    code = str(code).zfill(6)
+    day = market._days_on_record(date)[-1]
+    key = day.replace("-", "")
+    get = fetch or (lambda flag: _dated("lhb_seats", f"{code}_{key}_{flag}", _closed(pd.Timestamp(day)),
+                                        lambda: store.ak().stock_lhb_stock_detail_em(symbol=code, date=key, flag=flag),
+                                        "Eastmoney 龙虎榜 seats"))
+    sides: dict[str, pd.DataFrame] = {}
+    for flag in ("买入", "卖出"):
+        try:
+            sides[flag] = get(flag)
+        except Exception as e:  # noqa: BLE001 — not published yet, or Eastmoney down
+            return {"code": code, "date": day, "available": False, "note": f"席位明细不可得：{type(e).__name__}", "groups": []}
+    if all(t is None or not len(t) for t in sides.values()):
+        return {"code": code, "date": day, "available": False, "note": f"{day} 没有该股的龙虎榜席位", "groups": []}
+
+    def seat(r) -> dict:
+        name = str(r["交易营业部名称"])
+        num = lambda c: pd.to_numeric(r.get(c), errors="coerce")  # noqa: E731
+        buy, sell = num("买入金额"), num("卖出金额")
+        return {"seat": name, "kind": _seat_kind(name), "buy": _r(buy, 0), "sell": _r(sell, 0),
+                "net": _r((0 if pd.isna(buy) else buy) - (0 if pd.isna(sell) else sell), 0),
+                "buy_share": _r(num("买入金额-占总成交比例") * 100), "sell_share": _r(num("卖出金额-占总成交比例") * 100)}
+    reasons = list(dict.fromkeys(
+        str(x) for t in sides.values() if t is not None and len(t) and "类型" in t for x in t["类型"].dropna()))
+    groups = []
+    for reason in reasons or [""]:
+        g = {"reason": reason}
+        for flag, out in (("买入", "buy"), ("卖出", "sell")):
+            t = sides.get(flag)
+            if t is None or not len(t):
+                g[out] = []
+                continue
+            if reason and "类型" in t:
+                t = t[t["类型"].astype(str) == reason]
+            g[out] = [seat(r) for r in t.to_dict("records")]
+        # A seat in both lists: each row carries both sides, so its 净额 is the seat's own.
+        # Not 机构专用: every institution goes by that one name, and they are different seats.
+        bought_by = {x["seat"]: x for x in g["buy"] if x["kind"] != "机构"}
+        sold_by = {x["seat"]: x for x in g["sell"] if x["kind"] != "机构"}
+        for x in g["buy"]:
+            other = sold_by.get(x["seat"])
+            if other and x["sell"] is None:
+                x.update(sell=other["sell"], sell_share=other["sell_share"], net=_r((x["buy"] or 0) - (other["sell"] or 0), 0))
+        for x in g["sell"]:
+            other = bought_by.get(x["seat"])
+            if other and x["buy"] is None:
+                x.update(buy=other["buy"], buy_share=other["buy_share"], net=_r((other["buy"] or 0) - (x["sell"] or 0), 0))
+        # Every listed seat once (the top five each way, a seat in both lists counted once), as
+        # Eastmoney's 龙虎榜买入额 / 卖出额: named seats by name, institutions by their amounts.
+        listed = {(x["seat"], None, None) if x["kind"] != "机构" else (x["seat"], x["buy"], x["sell"]): x
+                  for x in g["buy"] + g["sell"]}
+        bought = sum(x["buy"] or 0 for x in listed.values())
+        sold = sum(x["sell"] or 0 for x in listed.values())
+        # The institutions' net: each institution row once (one in both lists is the same seat).
+        inst = {(x["buy"], x["sell"]): x for x in g["buy"] + g["sell"] if x["kind"] == "机构"}
+        g.update({"top_buy": _r(bought, 0), "top_sell": _r(sold, 0), "top_net": _r(bought - sold, 0),
+                  "inst_net": _r(sum(x["net"] or 0 for x in inst.values()), 0) if inst else None})
+        groups.append(g)
+    return {"code": code, "date": day, "available": True, "groups": groups}

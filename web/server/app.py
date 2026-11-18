@@ -15,6 +15,7 @@
   GET  /api/market/flow/industry       ?span=1d|5d|10d&date=: main-force flow by 申万 industry
   GET  /api/market/releases            ?date=: shares coming off lock-up in the next 30 days
   GET  /api/market/lhb                 ?date=: the day's 龙虎榜 with the institutions' buying
+  GET  /api/market/lhb/{code}          ?date=: that stock's top five buying and selling seats
   GET  /api/market/breadth             ?range=&end=: 涨停溢价 and 晋级率, size styles, new highs and lows, share above MAs
   GET/POST /api/market/sync             the snapshot sync for days not on disk yet: its status, or start it
   GET  /api/market/index/{code}/members today's constituents of an index (000300: 沪深300)
@@ -236,6 +237,12 @@ def create_app(manager: RunManager | None = None, reports_root: Path | None = No
     @app.get("/api/market/lhb")
     def market_lhb(date: str | None = day_q()):
         return _guard(extras.lhb, date)
+
+    @app.get("/api/market/lhb/{code}")
+    def market_lhb_seats(code: str, date: str | None = day_q()):
+        if not code.isdigit() or len(code) != 6:
+            raise HTTPException(400, "code must be 6 digits")
+        return _guard(extras.lhb_seats, code, date)
 
     @app.get("/api/market/themes")
     def market_themes(days: int = Query(5), date: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
