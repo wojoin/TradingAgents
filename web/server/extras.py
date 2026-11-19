@@ -289,7 +289,7 @@ def _em_flow(day: str, span: str) -> pd.Series | None:
         return None
     s = pd.to_numeric(df[col], errors="coerce")
     s.index = df["代码"].astype(str).str.zfill(6)
-    return s
+    return market._unique(s)
 
 
 def _ths_flow(day: str, span: str) -> pd.Series | None:
@@ -309,7 +309,7 @@ def _ths_flow(day: str, span: str) -> pd.Series | None:
         return None
     s = df[col].map(cn_number).astype(float)
     s.index = df["股票代码"].astype(str).str.zfill(6)
-    return s
+    return market._unique(s)
 
 
 def _stock_flow(day: str, span: str) -> tuple[pd.Series | None, str | None]:
@@ -531,3 +531,123 @@ def lhb_seats(code: str, date: str | None = None, fetch=None) -> dict:
                   "inst_net": _r(sum(x["net"] or 0 for x in inst.values()), 0) if inst else None})
         groups.append(g)
     return {"code": code, "date": day, "available": True, "groups": groups}
+
+
+# ---------------------------------------------------------------------------
+# 概念板块热度: 同花顺's concept boards, their change and money flow (latest day only)
+# ---------------------------------------------------------------------------
+CONCEPT_SPANS = {"1d": ("即时", "now"), "5d": ("5日排行", "5d"), "10d": ("10日排行", "10d")}
+
+
+def _pct_text(v) -> float | None:
+    """同花顺's "1.77%" (or a number) as 1.77."""
+    if v is None or (isinstance(v, float) and pd.isna(v)):
+        return None
+    try:
+        return float(str(v).replace("%", "").strip())
+    except ValueError:
+        return None
+
+
+def concepts(date: str | None = None, span: str = "1d", fetch=None) -> dict:
+    """同花顺's concept boards over ``span`` (1d, 5d, 10d): change, money in and out (同花顺's
+    measure: every trade by who started it) and the leading stock; its tables carry no history,
+    so the latest closed day only."""
+    from tradingagents.dataflows.vendors.akshare.sentiment import _dated
+
+    if span not in CONCEPT_SPANS:
+        raise ValueError(f"span must be one of {', '.join(CONCEPT_SPANS)}")
+    day = market._days_on_record(date)[-1]
+    if day < market.last_closed_day():
+        return {"date": day, "span": span, "available": False, "note": f"{day} 的概念板块数据不可得：同花顺只提供最近一个交易日"}
+    symbol, key = CONCEPT_SPANS[span]
+    try:
+        df = (fetch or (lambda: _dated(f"ths_concept_flow_{key}", day.replace("-", ""), not store.is_intraday(),
+                                       lambda: store.ak().stock_fund_flow_concept(symbol=symbol), "同花顺 concept flow")))()
+    except Exception as e:  # noqa: BLE001
+        return {"date": day, "span": span, "available": False, "note": f"同花顺概念板块暂不可用：{type(e).__name__}"}
+    if df is None or not len(df):
+        return {"date": day, "span": span, "available": False, "note": "同花顺概念板块暂无数据"}
+    pct_col = "行业-涨跌幅" if "行业-涨跌幅" in df else "阶段涨跌幅"
+    num = lambda c: pd.to_numeric(df[c], errors="coerce") if c in df else pd.Series(float("nan"), index=df.index)  # noqa: E731
+    rows = [{"name": str(r["行业"]), "pct": _pct_text(r.get(pct_col)), "count": None if pd.isna(c) else int(c),
+             "inflow": _r(i * 1e8, 0), "outflow": _r(o * 1e8, 0), "net": _r(n * 1e8, 0),
+             "leader": None if not isinstance(r.get("领涨股"), str) else r["领涨股"], "leader_pct": _pct_text(r.get("领涨股-涨跌幅"))}
+            for r, c, i, o, n in zip(df.to_dict("records"), num("公司家数"), num("流入资金"), num("流出资金"), num("净额"), strict=False)]
+    rows.sort(key=lambda x: -(x["pct"] if x["pct"] is not None else -1e9))
+    ups = [x for x in rows if (x["pct"] or 0) > 0]
+    return {"date": day, "span": span, "available": True, "count": len(rows), "up": len(ups),
+            "net": _r(sum(x["net"] or 0 for x in rows), 0), "concepts": rows}
+
+
+# ---------------------------------------------------------------------------
+# 业绩预告: the latest report periods' forecasts (Eastmoney), by type and industry
+# ---------------------------------------------------------------------------
+GOOD = ("预增", "略增", "扭亏", "续盈", "减亏")
+BAD = ("预减", "略减", "首亏", "续亏")
+TYPE_ORDER = (*GOOD, *BAD, "不确定")
+
+
+def _periods(day: str) -> list[pd.Timestamp]:
+    """The four report periods a forecast on ``day`` can be for: the latest quarter end's year
+    end ahead, then back."""
+    d = pd.Timestamp(day)
+    ends = [pd.Timestamp(year=y, month=m, day=31 if m in (3, 12) else 30) for y in (d.year - 1, d.year) for m in (3, 6, 9, 12)]
+    return sorted([e for e in ends if e <= d + pd.offsets.YearEnd(0)], reverse=True)[:4]
+
+
+def forecasts(date: str | None = None, period: str | None = None, table=None) -> dict:
+    """The forecasts of a report period announced on or before ``date``: one per stock (the
+    net profit attributable to shareholders), how many of each type, the share that are good
+    news, by 申万一级 industry, and the biggest changes. Without ``period``: the latest period
+    with at least 100 forecasts (or the one with the most)."""
+    from tradingagents.dataflows.vendors.akshare.events import _period_table
+
+    day = market._days_on_record(date)[-1]
+    get = table or (lambda p: _period_table("yjyg", "stock_yjyg_em", p))
+    # Every recent period, so the reply always lists them all (the page's period buttons), and the
+    # one asked for even when it is older.
+    candidates = _periods(day)
+    if period and pd.Timestamp(period) not in candidates:
+        candidates.append(pd.Timestamp(period))
+    tables = {}
+    for p in candidates:
+        try:
+            t = get(p)
+        except Exception as e:  # noqa: BLE001
+            log.info("forecasts %s: %s", p.date(), e)
+            continue
+        if t is None or not len(t):
+            continue
+        t = t[t["预测指标"].astype(str).str.contains("净利润") & ~t["预测指标"].astype(str).str.contains("扣除")]
+        t = t[pd.to_datetime(t["公告日期"], errors="coerce") <= pd.Timestamp(day)]
+        tables[p] = t.drop_duplicates("股票代码", keep="first")
+    counts = {f"{p:%Y-%m-%d}": len(t) for p, t in tables.items()}
+    if not tables:
+        return {"date": day, "available": False, "note": "暂无业绩预告数据", "periods": counts}
+    pick = pd.Timestamp(period) if period else next((p for p in tables if len(tables[p]) >= 100), max(tables, key=lambda p: len(tables[p])))
+    t = tables.get(pick)
+    if t is None or not len(t):
+        return {"date": day, "available": False, "note": f"{pick:%Y-%m-%d} 没有业绩预告", "periods": counts}
+    t = t.assign(code=t["股票代码"].astype(str).str.zfill(6), kind=t["预告类型"].astype(str),
+                 chg=pd.to_numeric(t["业绩变动幅度"], errors="coerce"))
+    sectors = market.industries()
+    t = t.join(sectors[["sw1"]], on="code")
+    types = [{"type": k, "count": int((t["kind"] == k).sum()), "good": k in GOOD} for k in TYPE_ORDER if (t["kind"] == k).any()]
+    good = int(t["kind"].isin(GOOD).sum())
+    by_ind = []
+    for name, g in t.dropna(subset=["sw1"]).groupby("sw1"):
+        n_good = int(g["kind"].isin(GOOD).sum())
+        by_ind.append({"name": name, "count": int(len(g)), "good": n_good, "good_share": _r(n_good / len(g) * 100, 1),
+                       "median_chg": _r(g["chg"].median())})
+    by_ind.sort(key=lambda x: (-x["count"], x["name"]))
+
+    def row(r) -> dict:
+        return {"code": r["code"], "name": r["股票简称"], "type": r["kind"], "chg": _r(r["chg"]),
+                "date": str(r["公告日期"])[:10], "industry": r["sw1"] if isinstance(r["sw1"], str) else None,
+                "what": _text(r["业绩变动"])}
+    best = t.dropna(subset=["chg"]).sort_values("chg", ascending=False).head(15)
+    latest = t.sort_values("公告日期", ascending=False).head(15)
+    return {"date": day, "available": True, "period": f"{pick:%Y-%m-%d}", "periods": counts, "count": int(len(t)),
+            "good": good, "good_share": _r(good / len(t) * 100, 1), "types": types, "industries": by_ind,
+            "best": [row(r) for r in best.to_dict("records")], "latest": [row(r) for r in latest.to_dict("records")]}

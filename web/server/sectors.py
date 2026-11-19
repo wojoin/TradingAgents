@@ -34,6 +34,9 @@ def _fetch(name: str) -> pd.DataFrame:
     if name == "sw_daily":
         return store.incremental("sw_daily", industry._daily_fetcher("一级行业", today), "发布日期",
                                  f"{today.year - industry.L1_YEARS}0101", key_cols=("指数代码",))
+    if name == "sw_daily2":
+        return store.incremental("sw_daily2", industry._daily_fetcher("二级行业", today), "发布日期",
+                                 f"{today.year - industry.L2_YEARS}0101", key_cols=("指数代码",))
     return store.incremental("sw_market", lambda s: sw_index_analysis("市场表征", "801003", s, today.strftime("%Y%m%d")),
                              "日期", ak_settings.START_DATE)
 
@@ -54,7 +57,7 @@ def series(name: str, fetch=None) -> tuple[pd.DataFrame, str | None]:
                 if not path.exists():
                     raise LookupError(f"申万数据不可得：{type(e).__name__}") from e
                 df, note = pd.read_parquet(path), f"申万数据未能更新，使用本地数据：{type(e).__name__}"
-            col = "发布日期" if name == "sw_daily" else "日期"
+            col = "发布日期" if name.startswith("sw_daily") else "日期"
             df = df.assign(date=store.to_local_dates(df[col]).dt.strftime("%Y-%m-%d"))
             if len(_MEMO) > 8:          # older days' copies
                 _MEMO.clear()
@@ -82,11 +85,17 @@ def _r(v, d: int = 3):
     return None if v is None or pd.isna(v) else round(float(v), d)
 
 
-def sectors(end: str | None = None, days: int = 20) -> dict:
-    """The industries' heat map over ``days`` trading days to ``end`` and their valuation on it."""
+LEVELS = {"sw1": "sw_daily", "sw2": "sw_daily2"}
+
+
+def sectors(end: str | None = None, days: int = 20, level: str = "sw1") -> dict:
+    """The industries' heat map over ``days`` trading days to ``end`` and their valuation on it:
+    申万一级 (``sw1``) or 二级 (``sw2``, named 一级-二级; its history since 2023)."""
     if days not in ROTATION_DAYS:
         raise ValueError(f"days must be one of {', '.join(map(str, ROTATION_DAYS))}")
-    df, note = series("sw_daily")
+    if level not in LEVELS:
+        raise ValueError(f"level must be one of {', '.join(LEVELS)}")
+    df, note = series(LEVELS[level])
     if end:
         df = df[df["date"] <= end]
     if df.empty:
@@ -110,8 +119,10 @@ def sectors(end: str | None = None, days: int = 20) -> dict:
         pe, pb = _num(hist["市盈率"]), _num(hist["市净率"])
         row = today.loc[name]
         now_pe, now_pb = _f(row["市盈率"]), _f(row["市净率"])
+        code = str(row["指数代码"])
+        parent = industry.SW2_PARENT.get(code) if level == "sw2" else None
         out.append({
-            "name": name, "code": str(row["指数代码"]),
+            "name": f"{parent}-{name}" if parent else name, "code": code, "sw1": parent or name,
             "pct": [_r(v, 2) for v in shown[name].tolist()],
             "cum": _r(cn[name], 2), "cum5": _r(c5[name], 2), "cum20": _r(c20[name], 2),
             "pe": _r(now_pe, 2), "pb": _r(now_pb, 2), "dy": _r(_f(row["股息率"]), 2),
@@ -119,7 +130,7 @@ def sectors(end: str | None = None, days: int = 20) -> dict:
             "amount_share": _r(_f(row["成交额占比"]), 2),
         })
     out.sort(key=lambda x: -(x["cum"] if x["cum"] is not None else -np.inf))
-    return {"end": end, "as_of": as_of, "days": days, "dates": list(shown.index), "industries": out,
+    return {"end": end, "as_of": as_of, "days": days, "level": level, "dates": list(shown.index), "industries": out,
             "since": df["date"].min(), "note": note}
 
 

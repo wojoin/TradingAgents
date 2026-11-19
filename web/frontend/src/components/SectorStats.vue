@@ -11,7 +11,8 @@ function once<T>(cache: Map<string, Promise<T>>, key: string, get: () => Promise
   }
   return cache.get(key)!
 }
-const fetchSectors = (n: number, d: string) => once(sectorCache, `${n}|${d}`, () => sectorApi.marketSectors(n, d))
+const fetchSectors = (n: number, d: string, level: 'sw1' | 'sw2' = 'sw1') =>
+  once(sectorCache, `${n}|${d}|${level}`, () => sectorApi.marketSectors(n, d, level))
 const crowdCache = new Map<string, Promise<Crowding>>()
 const fetchCrowding = (d: string) => once(crowdCache, d, () => sectorApi.marketCrowding(d))
 const fetchValuation = (d: string) => once(valuationCache, d, () => sectorApi.marketValuation(d))
@@ -66,7 +67,7 @@ const sec = ref<MarketSectors | null>(null)
 const secError = ref('')
 const secLoading = ref(false)
 watch([span, () => props.date], async ([n, d]) => {
-  if (!d || !(has('heat') || has('val'))) return
+  if (!d || !has('val')) return
   secLoading.value = true
   secError.value = ''
   try {
@@ -78,6 +79,30 @@ watch([span, () => props.date], async ([n, d]) => {
     secLoading.value = false
   }
 }, { immediate: true })
+// The heat map's own data: 一级 (the same request as 行业估值) or 二级, which can be narrowed to one 一级.
+const heatLevel = stored<'sw1' | 'sw2'>('market.heatLevel', 'sw1', (v) => v === 'sw1' || v === 'sw2')
+const HEAT_LEVELS = [{ value: 'sw1', label: '一级' }, { value: 'sw2', label: '二级' }]
+const heatSec = ref<MarketSectors | null>(null)
+const heatError = ref('')
+const heatLoading = ref(false)
+watch([span, heatLevel, () => props.date], async ([n, lv, d]) => {
+  if (!d || !has('heat')) return
+  heatLoading.value = true
+  heatError.value = ''
+  try {
+    const r = await fetchSectors(n, d, lv)
+    if (span.value === n && heatLevel.value === lv && props.date === d) heatSec.value = r
+  } catch (e) {
+    heatError.value = e instanceof Error ? e.message : String(e)
+  } finally {
+    heatLoading.value = false
+  }
+}, { immediate: true })
+const heatParent = ref<string | null>(null)
+const heatParents = computed(() => [{ value: null, label: '全部一级' },
+  ...[...new Set((heatSec.value?.industries || []).map((r) => r.sw1))].sort((a, b) => a.localeCompare(b, 'zh')).map((p) => ({ value: p, label: p }))])
+const heatRows = computed(() => (heatSec.value?.industries || [])
+  .filter((r) => heatSec.value?.level !== 'sw2' || !heatParent.value || r.sw1 === heatParent.value))
 const mmdd = (d: string) => d.slice(5)
 // Red up, green down, stronger with the size of the move (full at ±4%).
 function heat(v: Num) {
@@ -225,29 +250,33 @@ const erpLines = computed<Line[]>(() => {
   <section v-if="has('heat')" class="card wide">
     <div class="head">
       <h3>行业轮动热力图</h3>
-      <SelectButton v-model="span" :options="SPANS" option-label="label" option-value="value" :allow-empty="false" size="small" />
+      <span class="btns">
+        <Select v-if="heatLevel === 'sw2'" v-model="heatParent" :options="heatParents" option-label="label" option-value="value" size="small" class="parent" />
+        <SelectButton v-model="heatLevel" :options="HEAT_LEVELS" option-label="label" option-value="value" :allow-empty="false" size="small" />
+        <SelectButton v-model="span" :options="SPANS" option-label="label" option-value="value" :allow-empty="false" size="small" />
+      </span>
     </div>
-    <p v-if="secError" class="bad small">{{ secError }}</p>
-    <p v-else-if="secLoading && !sec" class="muted small"><i class="pi pi-spin pi-spinner" /> 统计中</p>
-    <p class="muted small sub">申万一级行业指数每日涨跌幅（申万官方，市值加权），按区间累计涨幅排序；颜色越深涨跌越大。连续变红的是资金正在流入的方向，由红转绿说明轮动切换。点行业名筛选上方表格。
-      <template v-if="sec && date && sec.as_of !== date"> 申万数据截至 {{ sec.as_of }}。</template>
-      <span v-if="sec?.note" class="bad">{{ sec.note }}</span></p>
-    <div v-if="sec" class="heat-wrap">
+    <p v-if="heatError" class="bad small">{{ heatError }}</p>
+    <p v-else-if="heatLoading && !heatSec" class="muted small"><i class="pi pi-spin pi-spinner" /> 统计中</p>
+    <p class="muted small sub">申万{{ heatLevel === 'sw2' ? '二级（共 ' + (heatSec?.industries.length ?? '') + ' 个，名称为「一级-二级」，可选一级行业筛选）' : '一级' }}行业指数每日涨跌幅（申万官方，市值加权），按区间累计涨幅排序；颜色越深涨跌越大。连续变红的是资金正在流入的方向，由红转绿说明轮动切换。点行业名筛选上方表格{{ heatLevel === 'sw2' ? '为其所属一级行业' : '' }}。
+      <template v-if="heatSec && date && heatSec.as_of !== date"> 申万数据截至 {{ heatSec.as_of }}。</template>
+      <span v-if="heatSec?.note" class="bad">{{ heatSec.note }}</span></p>
+    <div v-if="heatSec" class="heat-wrap" :class="{ tall: heatSec.level === 'sw2' }">
       <table class="heat">
         <thead>
           <tr>
             <th class="nm">行业</th>
-            <th class="cum">{{ sec.days }}日累计</th>
+            <th class="cum">{{ heatSec.days }}日累计</th>
             <th class="cum">5日</th>
-            <th v-for="d in sec.dates" :key="d">{{ mmdd(d) }}</th>
+            <th v-for="d in heatSec.dates" :key="d">{{ mmdd(d) }}</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="r in sec.industries" :key="r.code">
-            <td class="nm"><a class="link" @click="emit('pick', r.name)">{{ r.name }}</a></td>
+          <tr v-for="r in heatRows" :key="r.code">
+            <td class="nm"><a class="link" :title="heatSec.level === 'sw2' ? `筛选上方表格：${r.sw1}` : ''" @click="emit('pick', r.sw1)">{{ r.name }}</a></td>
             <td class="cum" :class="cls(r.cum)">{{ signed(r.cum, 1) }}</td>
             <td class="cum" :class="cls(r.cum5)">{{ signed(r.cum5, 1) }}</td>
-            <td v-for="(v, i) in r.pct" :key="i" class="cell" :style="heat(v)" :title="`${r.name} ${sec.dates[i]} ${signed(v)}`">
+            <td v-for="(v, i) in r.pct" :key="i" class="cell" :style="heat(v)" :title="`${r.name} ${heatSec.dates[i]} ${signed(v)}`">
               {{ v === null ? '' : v.toFixed(1) }}
             </td>
           </tr>
@@ -425,6 +454,10 @@ h3 { margin: 0; font-size: 15px; }
 .link:hover { color: var(--up); }
 
 .heat-wrap { overflow-x: auto; margin-top: 6px; }
+.heat-wrap.tall { max-height: 560px; overflow-y: auto; }
+.heat-wrap.tall thead th { position: sticky; top: 0; background: #fff; z-index: 2; }
+.heat-wrap.tall thead th.nm { z-index: 3; }
+.parent { width: 130px; }
 .heat { border-collapse: separate; border-spacing: 2px; font-size: 12px; font-variant-numeric: tabular-nums; }
 .heat th { font-weight: 500; color: var(--muted); padding: 2px 4px; white-space: nowrap; }
 .heat td { padding: 3px 4px; text-align: center; white-space: nowrap; }

@@ -10,7 +10,8 @@ without waiting:
   * otherwise in this process, with the same functions the endpoints call.
 
 What cannot be had yet (the 龙虎榜 before about 18:00, a feed that is down) is reported; run it
-again later for those. The log, in Beijing time, is also kept in ``.akshare_data/web/daily.log``.
+again later for those. Each run also re-checks some of the concept boards' stocks kept on disk
+that are a month old, and logs what was added or removed (``concepts.refresh_due``). The log, in Beijing time, is also kept in ``.akshare_data/web/daily.log``.
 """
 from __future__ import annotations
 
@@ -156,6 +157,25 @@ def in_process(day: str) -> tuple[int, int]:
     return failed, pending
 
 
+def _check_concepts() -> None:
+    """The monthly check of the concept boards' stocks kept on disk (a few a run)."""
+    from web.server import concepts
+
+    try:
+        r = concepts.refresh_due()
+    except Exception as e:  # noqa: BLE001 — never fails the download
+        log.warning("概念成分股检查失败：%s", e)
+        return
+    if not r["due"]:
+        log.info("概念成分股：本地缓存都在 %d 天内检查过", concepts.CHECK_DAYS)
+        return
+    log.info("概念成分股：%d 个到期，本次检查 %d 个%s", r["due"], r["checked"],
+             f"（东方财富暂不可用，余下的下次再查：{r['stopped']}）" if r["stopped"] else "")
+    for c in r["changed"]:
+        log.info("  %s：新增 %s；剔除 %s", c["name"], "、".join(x["name"] for x in c["added"]) or "无",
+                 "、".join(x["name"] for x in c["removed"]) or "无")
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="下载最近一个已收盘交易日的行情与统计数据")
     p.add_argument("--server", default=SERVER, help=f"web 服务地址（默认 {SERVER}；不可用时在本进程内下载）")
@@ -168,6 +188,7 @@ def main(argv: list[str] | None = None) -> int:
     log.info("开始下载 %s 的数据（%s）", day, "经由 web 服务" if up else "web 服务未运行，本进程下载")
     t = time.time()
     failed, pending = via_server(args.server, day) if up else in_process(day)
+    _check_concepts()
     left = f"（{failed} 项失败、{pending} 项暂不可得，可稍后再运行一次）" if failed or pending else ""
     log.info("%s %s，用时 %.0fs%s", "部分完成" if left else "完成", day, time.time() - t, left)
     return 1 if left else 0

@@ -5,7 +5,7 @@
   GET  /api/market/calendar             the trading days a date can be picked from (to the last closed one)
   GET  /api/market/stats               ?range=1d|60d|6m|1y&end=: rises, falls and amount traded, day by day
   GET  /api/market/limits              ?date=: the day's limit-ups by run length (连板), 炸板 and limit-downs
-  GET  /api/market/sectors             ?days=10|20&end=: 申万一级 industries' heat map and valuation
+  GET  /api/market/sectors             ?days=10|20&level=sw1|sw2&end=: 申万一级 / 二级 industries' heat map and valuation
   GET  /api/market/crowding            ?end=: 行业拥挤度, the industries' turnover share and rate against their history
   GET  /api/market/valuation           ?end=: 申万A指's PE, PB and dividend yield since 2005
   GET  /api/market/margin              ?range=&end=: 两融余额 (Shanghai and Shenzhen) each trading day
@@ -16,6 +16,12 @@
   GET  /api/market/releases            ?date=: shares coming off lock-up in the next 30 days
   GET  /api/market/lhb                 ?date=: the day's 龙虎榜 with the institutions' buying
   GET  /api/market/lhb/{code}          ?date=: that stock's top five buying and selling seats
+  GET  /api/market/boards              ?date=: the day's 主板 / 创业板 / 科创板 / 北交所
+  GET  /api/market/concepts            ?span=1d|5d|10d&date=: 同花顺's concept boards (latest day)
+  GET  /api/market/concepts/{name}/stocks  ?date=: a concept's stocks (Eastmoney's board of that name, kept locally)
+  GET  /api/market/forecasts           ?date=&period=: a report period's 业绩预告 by type and industry
+  GET  /api/market/breadth/verdict     ?date=: 市场广度综合研判, each indicator judged by its own history
+  GET  /api/market/breadth/verdict/history  ?range=&end=: that reading on each day of a span, and how it went
   GET  /api/market/breadth             ?range=&end=: 涨停溢价 and 晋级率, size styles, new highs and lows, share above MAs
   GET/POST /api/market/sync             the snapshot sync for days not on disk yet: its status, or start it
   GET  /api/market/index/{code}/members today's constituents of an index (000300: 沪深300)
@@ -56,6 +62,8 @@ from pydantic import BaseModel
 
 from web.server import (
     breadth,
+    breadth_verdict,
+    concepts,
     extras,
     market,
     reports,
@@ -165,6 +173,23 @@ def create_app(manager: RunManager | None = None, reports_root: Path | None = No
         except FileNotFoundError as e:
             raise HTTPException(404, str(e)) from e
 
+    @app.get("/api/market/breadth/verdict")
+    def market_breadth_verdict(date: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
+        try:
+            return breadth_verdict.verdict(date)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+
+    @app.get("/api/market/breadth/verdict/history")
+    def market_breadth_verdict_history(range: str = Query("6m"),  # noqa: A002
+                                       end: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
+        try:
+            return breadth_verdict.history(end, range)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+
     @app.get("/api/market/breadth")
     def market_breadth(range: str = Query("60d"), end: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):  # noqa: A002
         try:
@@ -175,9 +200,10 @@ def create_app(manager: RunManager | None = None, reports_root: Path | None = No
             raise HTTPException(404, str(e)) from e
 
     @app.get("/api/market/sectors")
-    def market_sectors(days: int = Query(20), end: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
+    def market_sectors(days: int = Query(20), level: str = Query("sw1"),
+                       end: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
         try:
-            return sectors.sectors(end, days)
+            return sectors.sectors(end, days, level)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         except (FileNotFoundError, LookupError) as e:
@@ -243,6 +269,25 @@ def create_app(manager: RunManager | None = None, reports_root: Path | None = No
         if not code.isdigit() or len(code) != 6:
             raise HTTPException(400, "code must be 6 digits")
         return _guard(extras.lhb_seats, code, date)
+
+    @app.get("/api/market/boards")
+    def market_boards(date: str | None = day_q()):
+        try:
+            return market.boards(date)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+
+    @app.get("/api/market/concepts")
+    def market_concepts(span: str = Query("1d"), date: str | None = day_q()):
+        return _guard(extras.concepts, date, span)
+
+    @app.get("/api/market/concepts/{name}/stocks")
+    def market_concept_stocks(name: str, date: str | None = day_q()):
+        return _guard(concepts.board, name, date)
+
+    @app.get("/api/market/forecasts")
+    def market_forecasts(date: str | None = day_q(), period: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
+        return _guard(extras.forecasts, date, period)
 
     @app.get("/api/market/themes")
     def market_themes(days: int = Query(5), date: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):

@@ -286,7 +286,8 @@ def test_without_eastmoney_the_flow_is_ths_and_labelled_so(mkt):
 
     market, fake, _ = mkt
     fake.stock_individual_fund_flow_rank = _boom
-    fake.stock_fund_flow_individual = lambda symbol: pd.DataFrame({"股票代码": ["300308"], "净额": ["-5.33亿"]})
+    # Fetched page by page while prices move, 同花顺's ranking can list a stock twice: the first kept.
+    fake.stock_fund_flow_individual = lambda symbol: pd.DataFrame({"股票代码": ["300308", "300308"], "净额": ["-5.33亿", "-5.30亿"]})
     table = market.market_table()
     assert table["flow"]["source"] == "ths" and "同花顺" in table["flow"]["label"] and "不能与主力净流入比较" in table["flow"]["note"]
     assert {r["code"]: r["main_flow"] for r in table["rows"]}["300308"] == pytest.approx(-5.33e8)
@@ -907,10 +908,11 @@ def test_breadth_counts_new_highs_moving_averages_size_bands_and_limit_follow_th
     for d in base_days:
         for c, m in moves.items():
             close[c] *= 1 + m / 100
-            panel.append({"date": d, "code": c, "name": names[c], "pct_chg": m, "close": close[c]})
+            panel.append({"date": d, "code": c, "name": names[c], "pct_chg": m, "close": close[c], "amount": 1e8,
+                          "volume": {"600001": 3e5, "600002": 1e5, "600003": 1e5, "600004": 1e5}[c]})
     xs = pd.DataFrame({"code": list(moves), "name": list(names.values()), "pct_chg": list(moves.values()),
                        "close": [close[c] * (1 + m / 100) for c, m in moves.items()],
-                       "float_mv": [300.0, 200.0, 100.0, 1000.0]})
+                       "float_mv": [300.0, 200.0, 100.0, 1000.0], "amount": 1e8, "volume": [3e5, 1e5, 1e5, 1e5]})
     # Limit-ups: A on the last four days (a run), B the day before the last.
     events = pd.DataFrame([{"date": d, "code": "600001", "kind": "up"} for d in days[-4:]]
                           + [{"date": days[-2], "code": "600002", "kind": "up"}])
@@ -923,6 +925,7 @@ def test_breadth_counts_new_highs_moving_averages_size_bands_and_limit_follow_th
     monkeypatch.setattr(market, "_days_on_record", lambda end: days)
     monkeypatch.setattr(breadth, "MIN_STOCKS", 1)
     monkeypatch.setattr(breadth, "MIN_BAND", 1)
+    monkeypatch.setattr(breadth, "MIN_BOARD", 1)
     monkeypatch.setattr(breadth, "SIZE_BANDS", (("大盘", 0, 1), ("微盘", -1, None)))
     monkeypatch.setattr(breadth, "BAND_RULES", {"大盘": "最大 1 只", "微盘": "最小 1 只"})
     breadth.invalidate()
@@ -941,6 +944,23 @@ def test_breadth_counts_new_highs_moving_averages_size_bands_and_limit_follow_th
     assert day["promo_2"] is None, "no 2-in-a-row stock yesterday"
     assert b["days"][0]["prem_n"] == 0, "no limit-up the day before"
     assert (day["height"], day["multi_n"]) == (4, 1), "A on its fourth limit-up in a row"
+    assert day["board_主板"] == pytest.approx(0.25), "all four are 主板: the median of 1, -1, 0, 0.5"
+    assert day["board_创业板"] is None and day["conc100"] is None, "too few stocks for these"
+    assert day["trin_amt"] is None and day["mcl_osc"] is None, "TRIN and McClellan need a whole market"
+    monkeypatch.setattr(breadth, "MIN_MARKET", 1)
+    breadth.invalidate()
+    day = breadth.breadth(None, "60d")["days"][-1]
+    # Two rise (A, D) and one falls (B), each 1亿 traded: TRIN_额 (2/1)/(2亿/1亿) = 1;
+    # by volume A trades 3x: (2/1)/(4/1) = 0.5.
+    assert (day["trin_amt"], day["trin_vol"]) == (1.0, 0.5) and (day["trin_amt10"], day["trin_vol10"]) == (1.0, 0.5)
+    # Every day (2 - 1) / 3 * 1000: a flat ratio, so the two EMAs agree and the oscillator is 0.
+    assert day["mcl_ratio"] == pytest.approx(333.333, abs=0.01) and day["mcl_osc"] == 0
+    assert day["mcl_sum"] == pytest.approx(3333.33, abs=0.1), "MSI: 10 x a steady net advance ratio"
+    assert day["conc100"] == 100.0, "fewer than 100 stocks: all of it"
+    # 2 rise and 1 falls every day: ADR 2, ABI 1/3, a flat thrust at 2/3 that never fired.
+    assert (day["adr"], day["adr10"], day["abi"], day["thrust"]) == (2.0, 2.0, 33.333, 0.667)
+    assert day["thrust_signal"] is False and day["ma250"] is None, "not 250 days of history"
+    assert (day["ud_amt"], day["ud_vol"]) == (2.0, 4.0), "rising stocks' amount 2亿 vs 1亿; volume 4 vs 1"
     # 情绪综合分: 涨跌比 75, 涨停跌停比 100, 封板率 50, 溢价 0% -> 50, 晋级率 50% -> 100 (capped), 4 板 -> 3/7.
     parts = {k: day[f"m_{k}"] for k in ("updown", "limit", "seal", "prem", "promo", "height")}
     assert parts == pytest.approx({"updown": 75, "limit": 100, "seal": 50, "prem": 50, "promo": 100, "height": 300 / 7}, abs=0.01)
@@ -990,13 +1010,23 @@ def test_sectors_heat_map_valuation_ranks_and_the_market_series(monkeypatch, tmp
     assert bank["cum5"] == pytest.approx((1.01 ** 5 - 1) * 100, abs=0.01)
     assert len(bank["pct"]) == 20 and bank["pe_rank"] == 100.0 and r["industries"][1]["pe_rank"] == pytest.approx(4.0)
     assert sectors.sectors(days[9], 10)["dates"] == days[:10]
+    # 二级: its own series, each named after its 一级 (from the 申万 code).
+    rows2 = [{"指数代码": "801783", "指数名称": "股份制银行Ⅱ", "发布日期": d, "涨跌幅": 0.5, "市盈率": 5.0,
+              "市净率": 0.5, "股息率": 5.0, "成交额占比": 1.0} for d in days]
+    monkeypatch.setattr(sectors, "_fetch", lambda name: pd.DataFrame(rows2) if name == "sw_daily2" else fetch(name))
+    sectors.invalidate()
+    two = sectors.sectors(None, 10, "sw2")
+    assert two["level"] == "sw2" and [(x["name"], x["sw1"]) for x in two["industries"]] == [("银行-股份制银行Ⅱ", "银行")]
+    with pytest.raises(ValueError):
+        sectors.sectors(None, 10, "sw3")
+    fetched.clear()
     with pytest.raises(ValueError):
         sectors.sectors(None, 30)
 
     v = sectors.valuation(days[4])
     assert v["as_of"] == days[4] and [d["pe"] for d in v["days"]] == [15.0, 15.1, 15.2, 15.3, 15.4]
     assert v["days"][1]["y10"] == 2.0 and v["days"][0]["erp"] == pytest.approx(100 / 15 - 2, abs=1e-3), "股债性价比"
-    assert fetched == ["sw_daily", "sw_market"], "once per series per closed day"
+    assert fetched == ["sw_market"], "once per series per closed day"
 
     client = TestClient(create_app(RunManager(runner=lambda r, e: None), reports_root=tmp_path, watchlist_path=tmp_path / "w.json"))
     assert client.get("/api/market/sectors?days=10").json()["industries"][0]["name"] == "银行"
@@ -1297,3 +1327,308 @@ def test_lhb_seats_merge_both_sides_and_count_each_institution_once(monkeypatch,
     assert not none["available"]
     client = TestClient(create_app(RunManager(runner=lambda r, e: None), reports_root=tmp_path, watchlist_path=tmp_path / "w.json"))
     assert client.get("/api/market/lhb/60020x").status_code == 400
+
+
+
+def test_boards_split_the_day_by_board(monkeypatch):
+    import pandas as pd
+
+    from web.server import market
+
+    rows = pd.DataFrame({"code": ["600001", "000002", "300003", "688004", "920005", "830006"],
+                         "name": ["甲", "乙", "丙", "丁", "戊", "己"], "pre_close": 10.0,
+                         "close": [11.0, 9.0, 10.5, 9.5, 13.0, 10.0], "high": [11.0, 9.5, 10.5, 9.8, 13.0, 10.0],
+                         "pct_chg": [10.0, -10.0, 5.0, -5.0, 30.0, 0.0], "amount": [4e8, 1e8, 2e8, 2e8, 0.5e8, 0.5e8]})
+    monkeypatch.setattr(market, "cross_section", lambda date: ("2026-11-18", rows))
+    assert market.board_of(rows["code"]).tolist() == ["主板", "主板", "创业板", "科创板", "北交所", "北交所"]
+    b = {x["board"]: x for x in market.boards()["boards"]}
+    assert (b["主板"]["count"], b["主板"]["limit_up"], b["主板"]["limit_down"], b["主板"]["amount_share"]) == (2, 1, 1, 50.0)
+    assert (b["北交所"]["up"], b["北交所"]["flat"], b["北交所"]["limit_up"]) == (1, 1, 1)
+    assert b["创业板"]["median"] == 5.0
+
+
+def test_concepts_and_forecasts(monkeypatch):
+    import pandas as pd
+
+    from web.server import extras, market
+
+    monkeypatch.setattr(market, "_days_on_record", lambda end: [d for d in ("2026-11-17", "2026-11-18") if not end or d <= end])
+    monkeypatch.setattr(market, "last_closed_day", lambda: "2026-11-18")
+    now = pd.DataFrame({"行业": ["F5G概念", "CRO概念"], "行业-涨跌幅": [2.81, -3.2], "流入资金": [186.3, 10.0],
+                        "流出资金": [164.83, 15.0], "净额": [21.47, -5.0], "公司家数": [36, 20],
+                        "领涨股": ["平治信息", "某某"], "领涨股-涨跌幅": [13.95, 1.0]})
+    c = extras.concepts(None, "1d", fetch=lambda: now)
+    assert c["available"] and (c["count"], c["up"]) == (2, 1)
+    assert c["concepts"][0] == {"name": "F5G概念", "pct": 2.81, "count": 36, "inflow": 186.3e8, "outflow": 164.83e8,
+                                "net": 21.47e8, "leader": "平治信息", "leader_pct": 13.95}
+    five = pd.DataFrame({"行业": ["证金持股"], "阶段涨跌幅": ["1.77%"], "流入资金": [90.23], "流出资金": [113.22],
+                         "净额": [-22.99], "公司家数": [33]})
+    assert extras.concepts(None, "5d", fetch=lambda: five)["concepts"][0]["pct"] == 1.77
+    assert not extras.concepts("2026-11-17", "1d", fetch=lambda: now)["available"], "only the latest day"
+    with pytest.raises(ValueError):
+        extras.concepts(None, "3d", fetch=lambda: now)
+
+    monkeypatch.setattr(market, "industries", lambda: pd.DataFrame({"sw1": ["电子", "电子", "银行"]},
+                                                                    index=["000001", "000002", "000003"]))
+    q3 = pd.DataFrame({
+        "股票代码": ["000001", "000001", "000002", "000003", "000004"],
+        "股票简称": ["甲", "甲", "乙", "丙", "丁"],
+        "预测指标": ["归属于上市公司股东的净利润", "营业收入", "归属于上市公司股东的净利润", "归属于上市公司股东的净利润",
+                     "扣除非经常性损益后的净利润"],
+        "业绩变动": ["盈利增长", "收入增长", "亏损", "扭亏", "扣非"], "业绩变动幅度": [120.0, 30.0, -50.0, None, 10.0],
+        "预告类型": ["预增", "略增", "首亏", "扭亏", "预增"], "公告日期": ["2026-10-10", "2026-10-10", "2026-10-20", "2026-11-19", "2026-10-01"]})
+    f = extras.forecasts(None, "2026-09-30", table=lambda p: q3)
+    assert f["available"] and f["period"] == "2026-09-30"
+    assert f["count"] == 2, "one net-profit forecast a stock; one announced after the day left out; 扣非 not counted"
+    assert (f["good"], f["good_share"]) == (1, 50.0)
+    assert [t["type"] for t in f["types"]] == ["预增", "首亏"]
+    assert f["industries"] == [{"name": "电子", "count": 2, "good": 1, "good_share": 50.0, "median_chg": 35.0}]
+    assert [x["name"] for x in f["best"]] == ["甲", "乙"] and f["latest"][0]["name"] == "乙"
+    picked = extras.forecasts(None, table=lambda p: q3 if p == pd.Timestamp("2026-09-30") else q3.iloc[:0])
+    assert picked["period"] == "2026-09-30", "without a period: the one with forecasts"
+    h1 = q3.assign(公告日期="2026-08-01")
+    both = lambda p: q3 if p == pd.Timestamp("2026-09-30") else h1 if p == pd.Timestamp("2026-06-30") else q3.iloc[:0]  # noqa: E731
+    chose = extras.forecasts(None, "2026-06-30", table=both)
+    assert chose["period"] == "2026-06-30"
+    assert set(chose["periods"]) == {"2026-09-30", "2026-06-30"}, "a period picked: the others still listed, to pick again"
+
+
+def test_concept_stocks_are_kept_locally_and_checked_monthly(monkeypatch, tmp_path):
+    import pandas as pd
+
+    from web.server import concepts, market
+
+    today = {"d": "2026-11-18"}
+    monkeypatch.setattr(concepts, "_dir", lambda: tmp_path / "concepts")
+    monkeypatch.setattr(concepts, "_today", lambda: today["d"])
+    monkeypatch.setattr(market, "cross_section", lambda date=None: ("2026-11-18", pd.DataFrame(
+        {"code": ["000001", "000002", "000003"], "pct_chg": [2.0, -1.0, 5.0], "close": [10.0, 20.0, 30.0], "amount": 1e8})))
+    monkeypatch.setattr(market, "industries", lambda: pd.DataFrame({"sw1": ["通信", "电子", "通信"]}, index=["000001", "000002", "000003"]))
+    names = pd.DataFrame({"板块名称": ["F5G概念", "算力租赁"], "板块代码": ["BK1001", "BK1002"]})
+    calls = []
+
+    def cons(rows):
+        def fetch(code):
+            calls.append(code)
+            return pd.DataFrame({"代码": [r[0] for r in rows], "名称": [r[1] for r in rows]})
+        return fetch
+
+    # Matching: exactly, else loosely (a trailing 概念, full-width forms, spaces).
+    assert concepts.match("F5G概念", concepts.em_names(lambda: names))[2] == "exact"
+    assert concepts.match("算力租赁概念", concepts.em_names())[:2] == ("算力租赁", "BK1002"), "names read from disk"
+    assert concepts.match("ＦＧ５ 概念", concepts.em_names()) is None
+    gone = concepts.board("不存在的概念", names_fetch=lambda: names, sina_names_fetch=lambda: pd.DataFrame({"板块": ["5G概念"], "label": ["gn_5Ggn"]}))
+    assert not gone["available"] and [t["source"] for t in gone["tried"]] == ["东方财富", "同花顺", "新浪"]
+    assert "东方财富没有" in gone["note"] and "同花顺：不提供" in gone["note"] and "新浪没有" in gone["note"]
+
+    first = cons([("000001", "甲"), ("000002", "乙")])
+    b = concepts.board("F5G概念", cons_fetch=first)
+    assert b["available"] and b["source"] == "network" and calls == ["BK1001"]
+    assert [x["code"] for x in b["stocks"]] == ["000001", "000002"] and b["stocks"][0]["industry"] == "通信"
+    assert (b["up"], b["down"], b["last_change"]) == (1, 1, None)
+
+    # Within a month: from disk, no request.
+    today["d"] = "2026-12-10"
+    assert concepts.board("F5G概念", cons_fetch=first)["source"] == "cache" and calls == ["BK1001"]
+
+    # A month on: fetched again and compared; what was added and removed is kept.
+    today["d"] = "2026-12-20"
+    later = cons([("000001", "甲"), ("000003", "丙")])
+    b = concepts.board("F5G概念", names_fetch=lambda: names, cons_fetch=later)     # the board list is a month old too
+    assert b["source"] == "network" and [x["code"] for x in b["stocks"]] == ["000003", "000001"]
+    assert b["last_change"] == {"date": "2026-12-20", "added": [{"code": "000003", "name": "丙"}],
+                                "removed": [{"code": "000002", "name": "乙"}]}
+
+    # Eastmoney down: what is on disk, however old.
+    today["d"] = "2027-03-01"
+
+    def down(code):
+        raise ConnectionError("Push2RateLimitError")
+    b = concepts.board("F5G概念", names_fetch=lambda: down(None), cons_fetch=down)
+    assert b["source"] == "stale" and b["count"] == 2, "the board list and the stocks both from disk"
+
+    # The monthly check: due boards re-fetched, stopping at the first failure.
+    assert concepts.refresh_due(pause=0, fetch=down) == {"due": 1, "checked": 0, "changed": [], "stopped": "ConnectionError"}
+    r = concepts.refresh_due(pause=0, fetch=cons([("000003", "丙")]))
+    assert (r["due"], r["checked"]) == (1, 1) and r["changed"][0]["removed"] == [{"code": "000001", "name": "甲"}]
+    assert concepts.refresh_due(pause=0)["due"] == 0, "checked today: nothing due"
+
+
+
+def test_concept_stocks_fall_back_to_sina(monkeypatch, tmp_path):
+    import pandas as pd
+
+    from web.server import concepts, market
+
+    monkeypatch.setattr(concepts, "_dir", lambda: tmp_path / "concepts")
+    monkeypatch.setattr(concepts, "_today", lambda: "2026-11-18")
+    monkeypatch.setattr(market, "cross_section", lambda date=None: ("2026-11-18", pd.DataFrame(
+        {"code": ["600050", "000063"], "pct_chg": [2.5, 1.0], "close": [4.53, 30.0], "amount": 1e9})))
+    monkeypatch.setattr(market, "industries", lambda: pd.DataFrame({"sw1": ["通信", "通信"]}, index=["600050", "000063"]))
+
+    def down(*a):
+        raise ConnectionError("Push2RateLimitError")
+    sina_list = pd.DataFrame({"板块": ["5G概念", "华为概念"], "label": ["gn_5Ggn", "gn_hwgn"]})
+    asked = []
+
+    def sina_cons(code):
+        asked.append(code)
+        return pd.DataFrame({"代码": ["600050", "000063"], "名称": ["中国联通", "中兴通讯"]})
+
+    # Eastmoney rate-limited: Sina's board of the same name.
+    b = concepts.board("5G概念", names_fetch=down, cons_fetch=down, sina_names_fetch=lambda: sina_list, sina_cons_fetch=sina_cons)
+    assert b["available"] and b["provider"] == "sina" and "东方财富" in b["provider_note"]
+    assert asked == ["sina_gn_5Ggn"] and [x["name"] for x in b["stocks"]] == ["中国联通", "中兴通讯"]
+    # Kept locally like Eastmoney's: the next look is from disk.
+    again = concepts.board("5G概念", names_fetch=down, cons_fetch=down, sina_cons_fetch=sina_cons)
+    assert again["source"] == "cache" and asked == ["sina_gn_5Ggn"]
+
+    # Eastmoney up but without the concept: Sina's too.
+    em = pd.DataFrame({"板块名称": ["算力租赁"], "板块代码": ["BK1002"]})
+    monkeypatch.setattr(concepts, "_today", lambda: "2026-12-30")        # both lists a month old: fetched again
+    hw = concepts.board("华为概念", names_fetch=lambda: em, cons_fetch=down, sina_names_fetch=lambda: sina_list, sina_cons_fetch=sina_cons)
+    assert hw["provider"] == "sina" and "东方财富没有" in hw["provider_note"]
+    # The monthly check covers Sina's boards too.
+    assert concepts.refresh_due(pause=0, fetch=sina_cons)["due"] == 1, "5G概念 checked a month ago"
+
+
+def test_v8_is_entered_by_one_thread_at_a_time():
+    import threading
+    import time
+
+    from py_mini_racer import MiniRacer
+
+    from web.server import v8guard
+
+    assert v8guard.install() and MiniRacer._v8guard, "installed when web.server is imported"
+    assert MiniRacer().eval("1 + 1") == 2
+
+    inside, most = [0], [0]
+    count = threading.Lock()
+
+    class Engine:               # stands in for MiniRacer: how many threads are in it at once
+        def _enter(self):
+            with count:
+                inside[0] += 1
+                most[0] = max(most[0], inside[0])
+            time.sleep(0.005)
+            with count:
+                inside[0] -= 1
+
+        def __init__(self):
+            self._enter()
+
+        def eval(self, code):
+            self._enter()
+            return code
+
+        def call(self, name):
+            self._enter()
+            return name
+    v8guard.wrap(Engine)
+
+    def run():
+        for _ in range(5):
+            e = Engine()
+            e.eval("x")
+            e.call("v")
+    threads = [threading.Thread(target=run) for _ in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert most[0] == 1, "never two threads inside"
+    assert v8guard.wrap(Engine) is Engine and Engine.eval.__wrapped__.__name__ == "eval", "wrapped once"
+
+
+
+def test_breadth_thrust_fires_once_when_the_ema_jumps_from_low_to_high():
+    import pandas as pd
+
+    from web.server import breadth
+
+    days = pd.RangeIndex(30)
+    ema = pd.Series([0.5] * 5 + [0.38, 0.45, 0.55, 0.62, 0.64, 0.6, 0.63]     # under 0.40, over 0.615 4 days on
+                    + [0.5] * 6 + [0.39] + [0.5] * 10 + [0.62], index=days)   # over again, but 11 days after the low
+    fired = breadth.thrust_signals(ema)
+    assert list(fired[fired].index) == [8], "once, on the day it crossed; not again while still high nor too late"
+
+
+
+def test_msi_does_not_depend_on_where_the_history_starts():
+    import numpy as np
+    import pandas as pd
+
+    rng = np.random.default_rng(7)
+    ratio = pd.Series(rng.normal(0, 300, 400))
+
+    def msi(r):
+        return 19 * r.ewm(span=39, adjust=False).mean() - 9 * r.ewm(span=19, adjust=False).mean()
+
+    def running_sum(r):
+        return (r.ewm(span=19, adjust=False).mean() - r.ewm(span=39, adjust=False).mean()).cumsum()
+    late = ratio.iloc[150:]
+    closed = (msi(ratio).loc[late.index] - msi(late)).abs()
+    summed = (running_sum(ratio).loc[late.index] - running_sum(late)).abs()
+    # The closed form forgets its start (the EMAs' memory fading); a running sum never does.
+    assert closed.iloc[-1] < 0.05 and closed.iloc[-1] < closed.iloc[-60], "the closed form: one MSI, whatever the start"
+    assert summed.iloc[-60:].min() > 100 * closed.iloc[-60:].max(), "a running sum: one per start"
+    gap = running_sum(ratio) - msi(ratio)
+    assert gap.std() < 1e-9 * msi(ratio).std(), "exactly the running sum, up to a constant"
+
+
+def test_breadth_verdict_judges_each_state_by_its_own_past_only(monkeypatch):
+    import numpy as np
+    import pandas as pd
+
+    from web.server import breadth_verdict as bv, market
+
+    days = [d.strftime("%Y-%m-%d") for d in pd.bdate_range("2025-01-01", periods=260)]
+    rng = np.random.default_rng(3)
+    table = pd.DataFrame({
+        "mcl_sum": np.cumsum(rng.normal(0, 50, 260)), "mcl_osc": rng.normal(0, 40, 260),
+        "thrust": rng.uniform(0.3, 0.7, 260), "thrust_signal": False,
+        "adr10": rng.uniform(0.5, 1.5, 260), "adr10_rank": rng.uniform(0, 100, 260),
+        "trin_amt10": rng.uniform(0.5, 1.2, 260), "trin_amt10_rank": rng.uniform(0, 100, 260)}, index=days)
+    up = rng.integers(1000, 4000, 260)
+    stats = pd.DataFrame({"date": days, "up": up, "down": 5000 - up})
+    idx = pd.Series(3000 * np.cumprod(1 + rng.normal(0, 0.01, 260)), index=days)
+    monkeypatch.setattr(market, "_days_on_record", lambda end: [d for d in days if not end or d <= end])
+
+    day = days[200]
+    v = bv.verdict(day, table=table, stats=stats, idx=idx)
+    assert v["date"] == day and [r["step"] for r in v["rows"]] == ["定趋势"] * 2 + ["找时机"] * 3 + ["验真伪"] * 2
+    assert v["history_to"] <= days[200 - 20], "only days whose 20 days had passed by the day asked about"
+    # The same answer whatever came after: the future cannot leak in.
+    later = idx.copy()
+    later.iloc[201:] *= 2
+    assert bv.verdict(day, table=table, stats=stats, idx=later)["rows"] == v["rows"]
+    for r in v["rows"]:
+        assert r["lean"] in {"偏多", "短期偏多", "中性", "短期偏空", "偏空", "无数据"} and "基准" in r["reason"]
+    assert v["conclusion"]["short_word"] and v["conclusion"]["watch"] and v["conclusion"]["summary"].startswith("短期（5 日）")
+    assert [p[0] for p in v["conclusion"]["points"]] == ["①", "②", "③"], "one line a step"
+
+    # The history: each day the card's reading as it would have been then, and how it went.
+    h = bv.history(days[230], "60d", table=table, stats=stats, idx=idx)
+    assert len(h["days"]) == 60 and h["end"] == days[230]
+    then = next(x for x in h["days"] if x["date"] == day)
+    assert (then["short"], then["mid"]) == (v["conclusion"]["short"], v["conclusion"]["mid"]), "the same reading as on the day"
+    assert then["f5"] == round((idx.iloc[205] / idx.iloc[200] - 1) * 100, 2)
+    assert h["days"][-1]["f5"] is None and h["days"][-6]["f5"] is not None and h["days"][-20]["f20"] is None, \
+        "an outcome only once it had happened by the end of the span, though later data exists"
+    acc = h["accuracy"]["short"]
+    assert set(acc) == {"bull", "bear", "all_up"} and all(acc[k]["days"] >= acc[k]["right"] for k in ("bull", "bear"))
+    with pytest.raises(ValueError):
+        bv.history(None, "2y", table=table, stats=stats, idx=idx)
+
+    # No index for the day yet: the divergence row says so instead of reading a stale index.
+    stale = bv.verdict(day, table=table, stats=stats, idx=idx.loc[:days[190]])
+    assert stale["rows"][-1]["lean"] == "无数据"
+
+
+def test_breadth_verdict_leans():
+    from web.server import breadth_verdict as bv
+
+    base = {"up5": 55.0, "up20": 58.0}
+    lean = lambda u5, u20: bv._lean({"days": 50, "up5": u5, "up20": u20}, base)[0]  # noqa: E731
+    assert (lean(62, 66), lean(48, 50), lean(62, 58), lean(48, 60), lean(56, 59)) == ("偏多", "偏空", "短期偏多", "短期偏空", "中性")

@@ -55,20 +55,31 @@ A browser front end for TradingAgents, with a left-hand menu:
   (about a month deep) fills in the Beijing stocks without a reason. A closed day's details are
   kept in `.akshare_data/web/limit_detail/`; a day neither feed serves shows — and is asked
   again after ten minutes.
+  市场广度 opens with 市场广度综合研判 (`server/breadth_verdict.py`): the breadth indicators read in
+  three steps (腾落线 and MSI for the trend, MCL, the breadth thrust and ADR for a turn, TRIN and the
+  index against 腾落线 to check the move), each state judged by how the 中证全指 did over the next 5
+  and 20 days after the same state here (only days whose outcome was known by the day asked
+  about), and a short- and medium-term reading built from them, with what to watch for next;
+  below it, that reading on each day of a span (each day judged as it would have been then), what
+  the 中证全指 then did, and how often a 偏多 / 偏空 reading was right. The
+  中证全指 (`ts/csi_all`) is topped up from Eastmoney, else from 中证指数公司 (Sina's copy stopped in
+  2016).
   The stats are laid out by category, the most important first, each in groups: 市场全景
-  (今日涨跌, 指数与量能, 资金与风险), 短线情绪 (情绪温度, 涨停板, 主线题材, 情绪指标, 龙虎榜), 板块与资金 (行业表现, 行业轮动), 市场宽度与风格
-  (市场宽度, 风格) and 估值; a category folds, remembered in the browser, and the chips at the
-  top jump to one.
+  (今日涨跌, 量能, 资金与风险), 市场广度 Breadth Indicator (趋势: the indexes against 腾落线 ADL, the
+  rises and falls, new highs and lows; 动量: MCL, MSI, breadth thrust, ADR / ABI; 参与度与资金: the
+  share above MAs, TRIN), 短线情绪 (情绪温度, 涨停板, 主线题材, 情绪指标, 龙虎榜), 板块与风格 (行业表现,
+  行业轮动, 概念板块, 风格), 估值 and 业绩; a category folds, remembered in the browser, and the chips
+  at the top jump to one.
   Also: the market's breadth and short-term mood (`server/breadth.py`): 涨停溢价
   (yesterday's limit-ups today) and 连板晋级率, 大小盘风格 (the median change of the top 300 /
   301–800 / 801–1800 / smallest 400 by float value, ST left out), 60- and 250-day new highs and
   lows, and the share above the 20- and 60-day MAs, on prices adjusted by compounding each
-  day's change. Two years of base are kept in `.akshare_data/web/panel_v1_<base through>.parquet`
+  day's change. Two years of base are kept in `.akshare_data/web/panel_v3_<base through>.parquet`
   (a few seconds to build once); before the daily snapshots a day's float value is its close
   times the latest float shares.
   Then sectors and valuation (`server/sectors.py`), from 申万宏源研究's official daily
-  figures: a heat map of the 31 申万一级 industries' daily change over the last 10 or 20
-  trading days, each industry's PE, PB and dividend yield with its percentile since 2021, the
+  figures: a heat map of the 31 申万一级 industries' (or the ~130 二级 ones', named 一级-二级 and
+  narrowed to one 一级 if wanted; `ts/sw_daily2`) daily change over the last 10 or 20 trading days, each industry's PE, PB and dividend yield with its percentile since 2021, the
   industries' crowding (行业拥挤度: their 5-day turnover share and rate ranked against their own history since 2021), the day's main-force flow summed by industry (latest day only, from the table's rows), and
   申万A指's PE, PB and dividend yield since 2005 with its percentile over a chosen span. The
   series are the data sync's `ts/sw_daily` and `ts/sw_market`, topped up here at most once a
@@ -85,6 +96,20 @@ A browser front end for TradingAgents, with a left-hand menu:
   (kept in `.akshare_data/web/lhb/` once the day is closed); a row opens on the stock's top five
   buying and selling seats (kept with the analysts' copy in `sentiment/lhb_seats/`). 情绪综合分 (`server/breadth.py`)
   averages six short-term readings put on 0–100.
+  Also: 分板块表现 (主板 / 创业板 / 科创板 / 北交所: the day's counts, median change, limit moves and
+  amount, and each board's median change over time), 成交集中度 (the 100 busiest stocks' and the
+  busiest 5%'s share of the amount traded; the panel keeps the amount, so it is `panel_v2`),
+  TRIN (the Arms index, by amount TRIN_额 and by volume TRIN_量, with 10-day averages and their
+  percentile over 250 days; the panel keeps the volume too, so it is `panel_v3`), the McClellan
+  oscillator (ratio-adjusted) and the summation index MSI (as 19 × EMA39 − 9 × EMA19, the sum from the
+  start of time, so its zero line does not depend on the first day kept; with its zero crossings), Zweig's breadth thrust (with its signals), the
+  advance-decline ratio and absolute breadth index, the share above the 250-day MA,
+  概念板块热度 (同花顺's concept boards over 1, 5 or 10 days, latest day only; a row opens on the
+  board's stocks, from Eastmoney's board of the same name (Sina's when Eastmoney fails or has none), kept in `.akshare_data/web/concepts/` and
+  re-checked after 30 days, with what was added and removed; `python -m web.server.daily` re-checks
+  up to 40 due boards a run) and 业绩预告 (a
+  report period's forecasts, one a stock, by type and 申万 industry, from the events module's
+  cache), the last in a sixth category, 业绩.
 - **分析** (analysis): start an analysis from a stock code or name (a name resolves to
   its code, and an ambiguous one lists the candidates), follow every agent live, and
   the saved reports in a table below, each downloadable as Markdown, HTML or a ZIP.
@@ -184,7 +209,7 @@ that is down) is listed; run it again later for those. Log (Beijing time):
 | GET | `/api/market?date=YYYY-MM-DD` | every A-share on the day (latest by default; any trading day) |
 | GET | `/api/market/calendar` | the first and last (closed) trading day, the holidays in between, and the days not synced yet |
 | GET | `/api/market/stats` | `?range=1d\|60d\|6m\|1y&end=`: rises, falls, unchanged and amount traded, day by day |
-| GET | `/api/market/sectors` | `?days=10\|20&end=`: 申万一级 industries' heat map and valuation percentiles |
+| GET | `/api/market/sectors` | `?days=10\|20&level=sw1\|sw2&end=`: 申万一级 industries' heat map and valuation percentiles |
 | GET | `/api/market/crowding` | `?end=`: 行业拥挤度 |
 | GET | `/api/market/valuation` | `?end=`: 申万A指's PE, PB and dividend yield since 2005 |
 | GET | `/api/market/margin` | `?range=&end=`: 两融余额 (Shanghai + Shenzhen) each trading day |
@@ -195,6 +220,12 @@ that is down) is listed; run it again later for those. Log (Beijing time):
 | GET | `/api/market/releases` | `?date=`: lock-up expiries in the next 30 days |
 | GET | `/api/market/lhb` | `?date=`: the day's 龙虎榜 |
 | GET | `/api/market/lhb/{code}` | `?date=`: that stock's top five buying and selling seats |
+| GET | `/api/market/boards` | `?date=`: the day's boards |
+| GET | `/api/market/concepts` | `?span=1d\|5d\|10d&date=`: 同花顺's concept boards |
+| GET | `/api/market/concepts/{name}/stocks` | `?date=`: a concept's stocks |
+| GET | `/api/market/forecasts` | `?date=&period=`: a report period's 业绩预告 |
+| GET | `/api/market/breadth/verdict` | `?date=`: 市场广度综合研判 |
+| GET | `/api/market/breadth/verdict/history` | `?range=&end=`: that reading day by day, and its hit rate |
 | GET | `/api/market/breadth` | `?range=&end=`: 涨停溢价 and 晋级率, size styles, new highs and lows, share above MAs |
 | GET | `/api/market/limits` | `?date=`: limit-ups by days in a row (with shape, reason, sealing times, orders), 炸板 and limit-downs |
 | GET / POST | `/api/market/sync` | the background snapshot sync: its status and progress, or start it |

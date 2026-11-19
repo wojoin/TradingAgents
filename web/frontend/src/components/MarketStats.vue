@@ -13,7 +13,10 @@ import LimitBoard from './LimitBoard.vue'
 import BreadthStats from './BreadthStats.vue'
 import SectorStats from './SectorStats.vue'
 import ThemeBoard from './ThemeBoard.vue'
+import ConceptBoard from './ConceptBoard.vue'
+import ForecastBoard from './ForecastBoard.vue'
 import MarginCard from './MarginCard.vue'
+import BreadthVerdict from './BreadthVerdict.vue'
 import RiskStats from './RiskStats.vue'
 import LhbBoard from './LhbBoard.vue'
 import IndustryBoard from './IndustryBoard.vue'
@@ -98,8 +101,8 @@ function useStats(key: string) {
 }
 // ---- Categories: the most important first; folding is remembered in this browser ----
 const CATEGORIES = [
-  { id: 'overview', title: '市场全景' }, { id: 'mood', title: '短线情绪' }, { id: 'sectors', title: '板块与资金' },
-  { id: 'breadth', title: '宽度与风格' }, { id: 'valuation', title: '估值' },
+  { id: 'overview', title: '市场全景' }, { id: 'breadth', title: '市场广度' }, { id: 'mood', title: '短线情绪' },
+  { id: 'sectors', title: '板块与风格' }, { id: 'valuation', title: '估值' }, { id: 'earnings', title: '业绩' },
 ]
 const FOLD_KEY = 'market.statsCollapsed'
 const collapsed = ref<string[]>((() => {
@@ -289,10 +292,10 @@ const note = computed(() => trend.data.value?.note || amount.data.value?.note ||
     <div :id="`stats-overview`" class="cat">
       <button type="button" class="cat-head" :aria-expanded="!collapsed.includes('overview')" @click="toggleCat('overview')">
         <i :class="collapsed.includes('overview') ? 'pi pi-chevron-right' : 'pi pi-chevron-down'" />
-        <h2>一、市场全景</h2><span class="muted small">涨跌家数、赚钱效应、指数、成交额、资金与风险</span>
+        <h2>一、市场全景</h2><span class="muted small">当日涨跌、量能、资金与风险</span>
       </button>
       <div v-show="!collapsed.includes('overview')">
-        <h4 class="grp">今日涨跌<span class="muted small">全市场涨跌面与赚钱效应</span></h4>
+        <h4 class="grp">今日涨跌<span class="muted small">当天的涨跌分布、赚钱效应与分板块表现</span></h4>
         <div class="stats">
         <!-- The day's spread of changes -->
         <section class="card wide">
@@ -338,6 +341,78 @@ const note = computed(() => trend.data.value?.note || amount.data.value?.note ||
           <p class="muted small">每天全部A股涨跌幅的中位数：一半个股好于它、一半差于它，比指数更能代表多数股票的表现。</p>
           <LineChart v-if="effect.data.value" :lines="effectLines" :format="(v) => signed(v)" />
         </section>
+        <BreadthStats :date="date" :cards="['boards']" />
+        </div>
+        <h4 class="grp">量能<span class="muted small">成交额与成交集中度</span></h4>
+        <div class="stats">
+        <!-- The amount traded over time -->
+        <section class="card">
+          <div class="head">
+            <h3>市场成交额</h3>
+            <Select v-model="amount.range.value" :options="RANGES" option-label="label" option-value="value" size="small" class="range" />
+          </div>
+          <p v-if="amount.error.value" class="bad small">{{ amount.error.value }}</p>
+          <p v-else-if="amountSummary" class="sum">
+            {{ amountSummary.last.date }} 成交 <b>{{ yi(amountSummary.last.amount / 1e8) }}</b>
+            <span v-if="amountSummary.change !== null" :class="amountSummary.change >= 0 ? 'up' : 'down'">
+              （较前一日 {{ signed(amountSummary.change, 1) }}）</span>
+            <template v-if="amountSummary.n > 1">
+              ；{{ amountSummary.n }} 个交易日日均 {{ yi(amountSummary.avg / 1e8) }}，
+              最高 {{ yi(amountSummary.hi.amount / 1e8) }}（{{ amountSummary.hi.date }}），
+              最低 {{ yi(amountSummary.lo.amount / 1e8) }}（{{ amountSummary.lo.date }}）
+            </template>
+          </p>
+          <p v-else-if="amount.loading.value" class="muted small"><i class="pi pi-spin pi-spinner" /> 统计中</p>
+          <LineChart v-if="amount.data.value" :lines="amountLines" :format="yi" />
+        </section>
+        <BreadthStats :date="date" :cards="['conc']" />
+        </div>
+        <h4 class="grp">资金与风险<span class="muted small">主力资金、杠杆资金、恐慌程度与解禁抛压</span></h4>
+        <div class="stats">
+            <RiskStats :date="date" :cards="['flow']" />
+            <MarginCard :date="date" />
+            <RiskStats :date="date" :cards="['qvix', 'releases']" />
+        </div>
+      </div>
+    </div>
+
+    <!-- 二、市场广度 Breadth Indicator -->
+    <div :id="`stats-breadth`" class="cat">
+      <button type="button" class="cat-head" :aria-expanded="!collapsed.includes('breadth')" @click="toggleCat('breadth')">
+        <i :class="collapsed.includes('breadth') ? 'pi pi-chevron-right' : 'pi pi-chevron-down'" />
+        <h2>二、市场广度 Breadth Indicator</h2><span class="muted small">不看指数，看多数股票在做什么：趋势、动量、参与度与资金</span>
+      </button>
+      <div v-show="!collapsed.includes('breadth')">
+        <h4 class="grp">综合研判<span class="muted small">定趋势 → 找时机 → 验真伪，按本地历史逐项判断</span></h4>
+        <div class="stats">
+            <BreadthVerdict :date="date" />
+        </div>
+        <h4 class="grp">趋势<span class="muted small">多空力量的累积方向：腾落线、涨跌家数、新高新低</span></h4>
+        <div class="stats">
+        <!-- The indexes against the median stock -->
+        <section class="card">
+          <div class="head">
+            <h3>指数与腾落线</h3>
+            <Select v-model="versus.range.value" :options="RANGES" option-label="label" option-value="value" size="small" class="range" />
+          </div>
+          <p v-if="versus.error.value" class="bad small">{{ versus.error.value }}</p>
+          <p v-else-if="versus.data.value?.index_error" class="bad small">{{ versus.data.value.index_error }}，只显示个股统计</p>
+          <div v-if="versusSummary" class="sum">
+            <div class="muted small">自 {{ versus.data.value?.index_base }} 收盘以来（点击隐藏或显示折线）：</div>
+            <div v-for="(row, i) in versusSummary.rows" :key="i" class="irow">
+              <button v-for="it in row" :key="it.name" type="button" class="item toggle" :class="{ off: hidden.includes(it.name) }"
+                      :title="hidden.includes(it.name) ? '点击显示' : '点击隐藏'" @click="toggleLine(it.name)">
+                <i class="dot" :style="{ background: it.color }" />{{ it.name }}
+                <b :class="it.value >= 0 ? 'up' : 'down'">{{ signed(it.value, 2) }}</b>
+              </button>
+            </div>
+            <div class="irow">腾落线 <b :class="versusSummary.adl >= 0 ? 'up' : 'down'">{{ versusSummary.adl > 0 ? '+' : '' }}{{ versusSummary.adl }}</b></div>
+          </div>
+          <p v-else-if="versus.loading.value" class="muted small"><i class="pi pi-spin pi-spinner" /> 统计中</p>
+          <p class="muted small">指数涨而个股中位数和腾落线走弱，说明只是少数权重股在撑；反之是普涨。</p>
+          <LineChart v-if="versus.data.value" :lines="shownVersusLines" :format="(v) => signed(v, 2)" :height="220" pick :rows="INDEX_ROWS" />
+          <LineChart v-if="versus.data.value" :lines="adlLines" :format="(v) => `${Math.round(v)}`" :height="140" />
+        </section>
         <!-- Rises and falls over time -->
         <section class="card">
           <div class="head">
@@ -360,68 +435,24 @@ const note = computed(() => trend.data.value?.note || amount.data.value?.note ||
           <p v-else-if="trend.loading.value" class="muted small"><i class="pi pi-spin pi-spinner" /> 统计中（首次需扫描一年个股日线，约数秒）</p>
           <LineChart v-if="trend.data.value" :lines="trendLines" :format="(v) => `${Math.round(v)}`" />
         </section>
+        <BreadthStats :date="date" :cards="['highs']" />
         </div>
-        <h4 class="grp">指数与量能<span class="muted small">指数、腾落线与成交额</span></h4>
+        <h4 class="grp">动量<span class="muted small">广度的速度、路程与极端转折：MCL、MSI、广度推力、涨跌比</span></h4>
         <div class="stats">
-        <!-- The indexes against the median stock -->
-        <section class="card">
-          <div class="head">
-            <h3>指数与腾落线</h3>
-            <Select v-model="versus.range.value" :options="RANGES" option-label="label" option-value="value" size="small" class="range" />
-          </div>
-          <p v-if="versus.error.value" class="bad small">{{ versus.error.value }}</p>
-          <p v-else-if="versus.data.value?.index_error" class="bad small">{{ versus.data.value.index_error }}，只显示个股统计</p>
-          <div v-if="versusSummary" class="sum">
-            <div class="muted small">自 {{ versus.data.value?.index_base }} 收盘以来（点击隐藏或显示折线）：</div>
-            <div v-for="(row, i) in versusSummary.rows" :key="i" class="irow">
-              <button v-for="it in row" :key="it.name" type="button" class="item toggle" :class="{ off: hidden.includes(it.name) }"
-                      :title="hidden.includes(it.name) ? '点击显示' : '点击隐藏'" @click="toggleLine(it.name)">
-                <i class="dot" :style="{ background: it.color }" />{{ it.name }}
-                <b :class="it.value >= 0 ? 'up' : 'down'">{{ signed(it.value, 1) }}</b>
-              </button>
-            </div>
-            <div class="irow">腾落线 <b :class="versusSummary.adl >= 0 ? 'up' : 'down'">{{ versusSummary.adl > 0 ? '+' : '' }}{{ versusSummary.adl }}</b></div>
-          </div>
-          <p v-else-if="versus.loading.value" class="muted small"><i class="pi pi-spin pi-spinner" /> 统计中</p>
-          <p class="muted small">指数涨而个股中位数和腾落线走弱，说明只是少数权重股在撑；反之是普涨。</p>
-          <LineChart v-if="versus.data.value" :lines="shownVersusLines" :format="(v) => signed(v, 1)" :height="220" pick :rows="INDEX_ROWS" />
-          <LineChart v-if="versus.data.value" :lines="adlLines" :format="(v) => `${Math.round(v)}`" :height="140" />
-        </section>
-        <!-- The amount traded over time -->
-        <section class="card">
-          <div class="head">
-            <h3>市场成交额</h3>
-            <Select v-model="amount.range.value" :options="RANGES" option-label="label" option-value="value" size="small" class="range" />
-          </div>
-          <p v-if="amount.error.value" class="bad small">{{ amount.error.value }}</p>
-          <p v-else-if="amountSummary" class="sum">
-            {{ amountSummary.last.date }} 成交 <b>{{ yi(amountSummary.last.amount / 1e8) }}</b>
-            <span v-if="amountSummary.change !== null" :class="amountSummary.change >= 0 ? 'up' : 'down'">
-              （较前一日 {{ signed(amountSummary.change, 1) }}）</span>
-            <template v-if="amountSummary.n > 1">
-              ；{{ amountSummary.n }} 个交易日日均 {{ yi(amountSummary.avg / 1e8) }}，
-              最高 {{ yi(amountSummary.hi.amount / 1e8) }}（{{ amountSummary.hi.date }}），
-              最低 {{ yi(amountSummary.lo.amount / 1e8) }}（{{ amountSummary.lo.date }}）
-            </template>
-          </p>
-          <p v-else-if="amount.loading.value" class="muted small"><i class="pi pi-spin pi-spinner" /> 统计中</p>
-          <LineChart v-if="amount.data.value" :lines="amountLines" :format="yi" />
-        </section>
+        <BreadthStats :date="date" :cards="['mcl', 'msi', 'thrust', 'adr']" />
         </div>
-        <h4 class="grp">资金与风险<span class="muted small">主力资金、杠杆资金、恐慌程度与解禁抛压</span></h4>
+        <h4 class="grp">参与度与资金<span class="muted small">站上均线的股票有多少、资金跟着涨的走还是跌的走</span></h4>
         <div class="stats">
-            <RiskStats :date="date" :cards="['flow']" />
-            <MarginCard :date="date" />
-            <RiskStats :date="date" :cards="['qvix', 'releases']" />
+        <BreadthStats :date="date" :cards="['ma', 'trin']" />
         </div>
       </div>
     </div>
 
-    <!-- 二、短线情绪 -->
+    <!-- 三、短线情绪 -->
     <div :id="`stats-mood`" class="cat">
       <button type="button" class="cat-head" :aria-expanded="!collapsed.includes('mood')" @click="toggleCat('mood')">
         <i :class="collapsed.includes('mood') ? 'pi pi-chevron-right' : 'pi pi-chevron-down'" />
-        <h2>二、短线情绪</h2><span class="muted small">情绪综合分、涨停板、主线题材、情绪指标与龙虎榜</span>
+        <h2>三、短线情绪</h2><span class="muted small">情绪综合分、涨停板、主线题材、情绪指标与龙虎榜</span>
       </button>
       <div v-show="!collapsed.includes('mood')">
         <h4 class="grp">情绪温度<span class="muted small">六项短线指标合成的情绪综合分</span></h4>
@@ -469,11 +500,11 @@ const note = computed(() => trend.data.value?.note || amount.data.value?.note ||
       </div>
     </div>
 
-    <!-- 三、板块与资金 -->
+    <!-- 四、板块与风格 -->
     <div :id="`stats-sectors`" class="cat">
       <button type="button" class="cat-head" :aria-expanded="!collapsed.includes('sectors')" @click="toggleCat('sectors')">
         <i :class="collapsed.includes('sectors') ? 'pi pi-chevron-right' : 'pi pi-chevron-down'" />
-        <h2>三、板块与资金</h2><span class="muted small">行业涨跌、资金流、轮动与拥挤度</span>
+        <h2>四、板块与风格</h2><span class="muted small">行业涨跌、资金流、轮动、拥挤度、概念板块与大小盘风格</span>
       </button>
       <div v-show="!collapsed.includes('sectors')">
         <h4 class="grp">行业表现<span class="muted small">当日行业涨跌与近 1 / 5 / 10 日资金流向</span></h4>
@@ -485,19 +516,9 @@ const note = computed(() => trend.data.value?.note || amount.data.value?.note ||
         <div class="stats">
         <SectorStats :rows="rows" :date="date" :cards="['heat', 'crowd']" @pick="(n) => emit('industry', n)" />
         </div>
-      </div>
-    </div>
-
-    <!-- 四、市场宽度与风格 -->
-    <div :id="`stats-breadth`" class="cat">
-      <button type="button" class="cat-head" :aria-expanded="!collapsed.includes('breadth')" @click="toggleCat('breadth')">
-        <i :class="collapsed.includes('breadth') ? 'pi pi-chevron-right' : 'pi pi-chevron-down'" />
-        <h2>四、市场宽度与风格</h2><span class="muted small">新高新低、均线上方占比与大小盘</span>
-      </button>
-      <div v-show="!collapsed.includes('breadth')">
-        <h4 class="grp">市场宽度<span class="muted small">上涨是否普遍、趋势强弱</span></h4>
+        <h4 class="grp">概念板块<span class="muted small">同花顺概念板块的涨跌与资金</span></h4>
         <div class="stats">
-        <BreadthStats :date="date" :cards="['highs', 'ma']" />
+            <ConceptBoard :date="date" />
         </div>
         <h4 class="grp">风格<span class="muted small">资金偏好大盘还是小盘</span></h4>
         <div class="stats">
@@ -516,6 +537,20 @@ const note = computed(() => trend.data.value?.note || amount.data.value?.note ||
         <h4 class="grp">估值<span class="muted small">长期位置，不适合短线择时</span></h4>
         <div class="stats">
         <SectorStats :rows="rows" :date="date" :cards="['market', 'erp', 'val']" />
+        </div>
+      </div>
+    </div>
+
+    <!-- 六、业绩 -->
+    <div :id="`stats-earnings`" class="cat">
+      <button type="button" class="cat-head" :aria-expanded="!collapsed.includes('earnings')" @click="toggleCat('earnings')">
+        <i :class="collapsed.includes('earnings') ? 'pi pi-chevron-right' : 'pi pi-chevron-down'" />
+        <h2>六、业绩</h2><span class="muted small">业绩预告的喜忧与行业分布</span>
+      </button>
+      <div v-show="!collapsed.includes('earnings')">
+        <h4 class="grp">业绩预告<span class="muted small">哪些行业的盈利在改善</span></h4>
+        <div class="stats">
+            <ForecastBoard :date="date" />
         </div>
       </div>
     </div>

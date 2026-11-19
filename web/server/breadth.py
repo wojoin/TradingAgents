@@ -11,6 +11,26 @@
   均线上方占比 the share of stocks closing above their 20-day and 60-day moving average.
   空间板      the day's highest run of limit-ups (最高连板) and how many stocks are on a run of
               two or more (连板家数).
+  分板块      the median change of 主板, 创业板, 科创板 and 北交所 stocks.
+  成交集中度  the share of the day's amount traded taken by the 100 busiest stocks, and by the
+              busiest 5% of stocks.
+  TRIN        the Arms index: (rising ÷ falling stocks) ÷ (the rising stocks' amount traded ÷ the
+              falling stocks'), TRIN_额; with volume instead of amount, TRIN_量; each also as
+              its 10-day average and where that sits among the past 250 days (%). Under 1: the
+              money is on the rising side; in A-shares it is so most days, hence the percentile.
+  麦克连      the McClellan oscillator, ratio-adjusted: each day's (rising − falling) ÷ (rising +
+              falling) × 1000, its 19-day EMA less its 39-day EMA.
+  MSI         the McClellan summation index: the oscillator added up. Summed from the first day
+              kept, its zero line would depend on that day. With α = 2 / (n + 1), Σ EMAₙ = X − (1/α − 1)
+              EMAₙ + c, so the running sum of EMA19 − EMA39 is 19 × EMA39 − 9 × EMA19 plus a
+              constant fixed by the start: that closed form is the sum taken from the start of time,
+              and its sign means something (in a steady state it is 10 × the net advance ratio).
+              msi_cross: +1 / −1 on the days it turns positive / negative.
+  涨跌比 ADR  rising ÷ falling stocks, its 10-day average and where that sits among 250 days.
+  绝对广量 ABI |rising − falling| ÷ (rising + falling) (%): how one-sided the day was, either way.
+  广度推力    Zweig's breadth thrust: the 10-day EMA of rising ÷ (rising + falling); a signal
+              when it climbs from under 0.40 to over 0.615 within 10 trading days.
+  涨跌量比    the rising stocks' amount traded (and volume) ÷ the falling stocks'.
   情绪综合分  six readings of the day's short-term mood, each put on 0–100, and their average:
               涨跌比 (rises among rises and falls), 涨停跌停比, 封板率 (limit-ups among those
               that touched the limit), 涨停溢价 (−5% … +5%), 晋级率 (0 … 40%) and 空间板
@@ -36,16 +56,23 @@ import pandas as pd
 from tradingagents.dataflows.vendors.akshare import store
 from web.server import market
 
-PANEL_VERSION = 1
+PANEL_VERSION = 3              # 2: with the amount traded; 3: and the volume
 LOOKBACK = 520                 # trading days of base kept: 250-day highs over a year's range
 SIZE_BANDS = (("大盘", 0, 300), ("中盘", 300, 800), ("小盘", 800, 1800), ("微盘", -400, None))
 BAND_RULES = {"大盘": "流通市值前 300（≈沪深300）", "中盘": "第 301–800（≈中证500）",
               "小盘": "第 801–1800（≈中证1000）", "微盘": "最小的 400 只"}
 MIN_STOCKS = 100              # fewer stocks with enough history on a day: no breadth figure
 MIN_BAND = 50                 # fewer stocks in a size band on a day: no median
+MIN_BOARD = 20                # fewer stocks of a board on a day: no median
+MIN_MARKET = 500              # fewer stocks traded on a day: no TRIN, McClellan or concentration
 _FIXED = ["prem_n", "prem_avg", "prem_up", "promo_1", "promo_2", "promo_3", "promo_multi", "promo_all",
           "nh60", "nl60", "nh250", "nl250", "ma20", "ma60", "height", "multi_n",
-          "mood", *[f"m_{k}" for k in ("updown", "limit", "seal", "prem", "promo", "height")]]
+          "mood", *[f"m_{k}" for k in ("updown", "limit", "seal", "prem", "promo", "height")],
+          "conc100", "conc5pct", "amount", *[f"board_{b}" for b in ("主板", "创业板", "科创板", "北交所")],
+          "trin_amt", "trin_vol", "trin_amt10", "trin_vol10", "trin_amt10_rank", "trin_vol10_rank",
+          "mcl_osc", "mcl_sum", "mcl_ratio", "msi_cross", "ma250", "adr", "adr10", "adr10_rank", "abi", "abi10",
+          "thrust", "thrust_signal", "ud_amt", "ud_vol"]
+THRUST_LOW, THRUST_HIGH, THRUST_DAYS = 0.40, 0.615, 10
 MOOD_PARTS = {"updown": "涨跌比", "limit": "涨停跌停比", "seal": "封板率", "prem": "涨停溢价", "promo": "晋级率", "height": "空间板"}
 
 
@@ -62,7 +89,7 @@ def _base_panel() -> pd.DataFrame:
     """date, code, name, pct_chg, close for the last LOOKBACK trading days of base."""
     bt = market.base_through_day()
     if not bt:
-        return pd.DataFrame(columns=["date", "code", "name", "pct_chg", "close"])
+        return pd.DataFrame(columns=["date", "code", "name", "pct_chg", "close", "amount", "volume"])
     path = _panel_path(bt)
     if path.exists():
         return pd.read_parquet(path)
@@ -73,9 +100,11 @@ def _base_panel() -> pd.DataFrame:
         "name": rows["name"].astype(str),
         "pct_chg": pd.to_numeric(rows["pct_chg"], errors="coerce").astype("float32"),
         "close": pd.to_numeric(rows["close"], errors="coerce").astype("float32"),
+        "amount": pd.to_numeric(rows["amount"], errors="coerce").astype("float64"),
+        "volume": pd.to_numeric(rows["volume"], errors="coerce").astype("float64"),
     })
     path.parent.mkdir(parents=True, exist_ok=True)
-    for old in path.parent.glob(f"panel_v{PANEL_VERSION}_*.parquet"):   # base moved on: one panel kept
+    for old in path.parent.glob("panel_v*_*.parquet"):      # an older version, or base moved on: one kept
         old.unlink(missing_ok=True)
     out.to_parquet(path)
     return out
@@ -95,14 +124,17 @@ def _table(key: tuple) -> pd.DataFrame:
         code = xs["code"].astype(str).str.zfill(6)
         parts.append(pd.DataFrame({"date": d, "code": code, "name": xs["name"].astype(str),
                                    "pct_chg": pd.to_numeric(xs["pct_chg"], errors="coerce"),
-                                   "close": pd.to_numeric(xs["close"], errors="coerce")}))
+                                   "close": pd.to_numeric(xs["close"], errors="coerce"),
+                                   "amount": pd.to_numeric(xs["amount"], errors="coerce"),
+                                   "volume": pd.to_numeric(xs["volume"], errors="coerce")}))
         if "float_mv" in xs:
             mv_parts.append(pd.DataFrame({"date": d, "code": code, "mv": pd.to_numeric(xs["float_mv"], errors="coerce")}))
     panel = pd.concat([p for p in parts if len(p)], ignore_index=True)
     panel = panel[panel["close"] > 0]
     if panel.empty:
         return pd.DataFrame(columns=columns())
-    pct, close = _wide(panel, "pct_chg"), _wide(panel, "close")
+    pct, close, amt = _wide(panel, "pct_chg"), _wide(panel, "close"), _wide(panel, "amount")
+    vol = _wide(panel, "volume") if "volume" in panel else pd.DataFrame(index=pct.index, columns=pct.columns)
     dates = list(pct.index)
     traded = pct.notna()
 
@@ -119,7 +151,7 @@ def _table(key: tuple) -> pd.DataFrame:
         out[f"nl{n}"] = ((adj < prev_lo * (1 - 1e-9)) & enough).sum(axis=1)
         # Not enough history on a day for any stock: no figure.
         out.loc[enough.sum(axis=1) < MIN_STOCKS, [f"nh{n}", f"nl{n}"]] = np.nan
-    for n in (20, 60):
+    for n in (20, 60, 250):
         ma = adj.rolling(n, min_periods=n).mean()
         base = traded & ma.notna()
         share = ((adj > ma) & base).sum(axis=1) / base.sum(axis=1).replace(0, np.nan) * 100
@@ -179,7 +211,74 @@ def _table(key: tuple) -> pd.DataFrame:
         rows.append(r)
     out = out.join(pd.DataFrame(rows, index=pct.index))     # the first day has no yesterday: None
     out = out.join(_mood(out, stats.set_index("date") if len(stats) else pd.DataFrame()))
+
+    # 成交集中度: the 100 busiest stocks' share, and the busiest 5%'s.
+    a = amt.reindex(columns=pct.columns).where(traded)
+    total = a.sum(axis=1)
+    ranked = a.rank(axis=1, ascending=False, method="first")
+    n = a.notna().sum(axis=1)
+    out["amount"] = total.where(total > 0)
+    out["conc100"] = (a.where(ranked <= 100).sum(axis=1) / total * 100).where(n >= MIN_MARKET)
+    out["conc5pct"] = (a.where(ranked.le(n * 0.05, axis=0)).sum(axis=1) / total * 100).where(n >= MIN_MARKET)
+
+    # TRIN (Arms index): the rising/falling count ratio over their amount (or volume) ratio.
+    rising, falling = pct > 0, pct < 0
+    adv, dec = rising.sum(axis=1), falling.sum(axis=1)
+    for key, w in (("amt", a), ("vol", vol.reindex(index=pct.index, columns=pct.columns).where(traded))):
+        up_w, down_w = w.where(rising).sum(axis=1), w.where(falling).sum(axis=1)
+        ok = (adv > 0) & (dec > 0) & (up_w > 0) & (down_w > 0) & (n >= MIN_MARKET)
+        trin = ((adv / dec) / (up_w / down_w)).where(ok)
+        out[f"trin_{key}"] = trin
+        out[f"ud_{key}"] = (up_w / down_w).where(ok)                        # 涨跌成交额比 / 成交量比
+        out[f"trin_{key}10"] = avg = trin.rolling(10, min_periods=10).mean()
+        # In A-shares the few rising stocks often take more than their share of the money, so
+        # TRIN sits under 1 most days: read it against its own past 250 days, not against 1.
+        out[f"trin_{key}10_rank"] = avg.rolling(250, min_periods=60).apply(lambda x: (x <= x[-1]).mean() * 100, raw=True)
+    # 涨跌比 ADR, 绝对广量 ABI and Zweig's breadth thrust.
+    whole = (adv + dec) >= MIN_MARKET
+    adr = (adv / dec).where(whole & (dec > 0))
+    out["adr"] = adr
+    out["adr10"] = adr10 = adr.rolling(10, min_periods=10).mean()
+    out["adr10_rank"] = adr10.rolling(250, min_periods=60).apply(lambda x: (x <= x[-1]).mean() * 100, raw=True)
+    out["abi"] = abi = ((adv - dec).abs() / (adv + dec) * 100).where(whole)
+    out["abi10"] = abi.rolling(10, min_periods=10).mean()
+    thrust = (adv / (adv + dec)).where(whole).ewm(span=THRUST_DAYS, adjust=False).mean()
+    out["thrust"] = thrust.where(whole)
+    out["thrust_signal"] = thrust_signals(thrust)
+
+    # McClellan, ratio-adjusted: 19- and 39-day EMAs of (rising - falling) / (rising + falling) * 1000.
+    ratio = ((adv - dec) / (adv + dec) * 1000).where((adv + dec) >= MIN_MARKET)
+    e19, e39 = ratio.ewm(span=19, adjust=False).mean(), ratio.ewm(span=39, adjust=False).mean()
+    out["mcl_ratio"] = ratio
+    out["mcl_osc"] = (e19 - e39).where(ratio.notna())
+    msi = (19 * e39 - 9 * e19).where(ratio.notna())      # MSI, the summation from the start of time
+    out["mcl_sum"] = msi
+    sign = np.sign(msi)
+    out["msi_cross"] = (sign.where((sign != sign.shift(1)) & sign.shift(1).notna() & (sign != 0))).fillna(0)
+
+    # 分板块: each board's median change.
+    boards = market.board_of(pd.Series(pct.columns, index=pct.columns))
+    for b in ("主板", "创业板", "科创板", "北交所"):
+        cols = boards.index[boards == b]
+        out[f"board_{b}"] = pct[cols].median(axis=1).where(traded[cols].sum(axis=1) >= MIN_BOARD) if len(cols) else np.nan
     return out[columns()]
+
+
+def thrust_signals(thrust: pd.Series) -> pd.Series:
+    """Zweig's breadth thrust: the days the EMA closes above THRUST_HIGH having been under
+    THRUST_LOW within the last THRUST_DAYS days. A thrust fires once: another needs the EMA
+    to fall under THRUST_LOW again first (a dip under the high mark is the same thrust)."""
+    out = pd.Series(False, index=thrust.index)
+    armed_until = -1
+    for i, v in enumerate(thrust.to_numpy()):
+        if np.isnan(v):
+            continue
+        if v < THRUST_LOW:
+            armed_until = i + THRUST_DAYS
+        elif v > THRUST_HIGH and i <= armed_until:
+            out.iat[i] = True
+            armed_until = -1
+    return out
 
 
 def _mood(out: pd.DataFrame, stats: pd.DataFrame) -> pd.DataFrame:
@@ -224,6 +323,8 @@ def breadth(end: str | None = None, rng: str = "60d") -> dict:
     part = table[(table.index >= start) & (table.index <= end)]
 
     def val(v):
+        if isinstance(v, (bool, np.bool_)):
+            return bool(v)
         return None if v is None or (isinstance(v, float) and np.isnan(v)) else round(float(v), 3)
     cols = columns()
     out = [{"date": d, **{c: val(row[c]) for c in cols}} for d, row in part.iterrows()]

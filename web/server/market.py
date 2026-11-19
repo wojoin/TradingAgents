@@ -100,6 +100,12 @@ def _cached_table(kind: str, key: str) -> pd.DataFrame | None:
     return pd.read_pickle(path) if path.exists() else None
 
 
+def _unique(flow: pd.Series) -> pd.Series:
+    """One value a code: a ranking fetched page by page while prices move can list a stock on two
+    pages (the first, ranked higher when fetched, is kept)."""
+    return flow[~flow.index.duplicated(keep="first")]
+
+
 def main_flow(date: str) -> tuple[pd.Series | None, dict]:
     """(code -> net inflow in yuan, source note) for the session ``date``."""
     from tradingagents.dataflows.vendors.akshare.insiders import cn_number
@@ -119,7 +125,7 @@ def main_flow(date: str) -> tuple[pd.Series | None, dict]:
     if em is not None and len(em) and "今日主力净流入-净额" in em:
         flow = pd.to_numeric(em["今日主力净流入-净额"], errors="coerce")
         flow.index = em["代码"].astype(str).str.zfill(6)
-        return flow, {"source": "eastmoney", "label": "主力净流入", "note": "东方财富 今日主力净流入"}
+        return _unique(flow), {"source": "eastmoney", "label": "主力净流入", "note": "东方财富 今日主力净流入"}
     ths = _cached_table("ths_fund_flow_now", key)
     if ths is None and latest:
         try:
@@ -128,8 +134,7 @@ def main_flow(date: str) -> tuple[pd.Series | None, dict]:
         except Exception:  # noqa: BLE001
             ths = None
     if ths is not None and len(ths) and "净额" in ths:
-        flow = ths["净额"].map(cn_number)
-        flow.index = ths["股票代码"].astype(str).str.zfill(6)
+        flow = _unique(pd.Series(ths["净额"].map(cn_number).to_numpy(), index=ths["股票代码"].astype(str).str.zfill(6)))
         why = f"东方财富不可用（{em_error}）" if em_error else "东方财富当日数据未缓存"
         return flow, {"source": "ths", "label": "资金净流入(同花顺)",
                       "note": f"{why}，改用同花顺口径：按主动买卖方向统计全部成交，不分主力，不能与主力净流入比较"}
@@ -214,8 +219,13 @@ def invalidate() -> None:
         _TABLES.clear()
     for f in (_read_xs, pct_5d, _history_day, _daily_stats):
         f.cache_clear()
-    from web.server import breadth, extras  # they import this module: imported here, not at the top
+    from web.server import (  # they import this module: here, not at the top
+        breadth,
+        breadth_verdict,
+        extras,
+    )
     breadth.invalidate()
+    breadth_verdict.invalidate()
     extras.invalidate()
 
 
@@ -288,6 +298,39 @@ STATS_VERSION = 3               # bump when the stats change, so the disk cache 
 ST_TEN_FROM = "2026-07-06"
 CHINEXT_TWENTY_FROM = "2020-08-24"
 _EPS = 1e-4
+
+
+BOARDS = ("主板", "创业板", "科创板", "北交所")
+
+
+def board_of(code: pd.Series) -> pd.Series:
+    """Each code's board: 创业板 (300, 301), 科创板 (688, 689), 北交所 (4xx, 8xx, 920), else 主板."""
+    c = code.astype(str).str.zfill(6)
+    return pd.Series(np.select(
+        [c.str[:3].isin(["300", "301"]), c.str[:3].isin(["688", "689"]), c.str[0].isin(["4", "8"]) | (c.str[:3] == "920")],
+        ["创业板", "科创板", "北交所"], "主板"), index=code.index)
+
+
+def boards(date: str | None = None) -> dict:
+    """The day's stocks by board: how many, rose, fell, the median change, amount traded and its
+    share, and the limit-ups and limit-downs."""
+    day, xs = cross_section(date)
+    rows = xs.assign(trade_date=day)
+    f = _day_frame(rows)
+    f = f.assign(board=board_of(f["code"]).to_numpy())
+    total = f["amount"].sum()
+    out = []
+    for b in BOARDS:
+        g = f[f["board"] == b]
+        if not len(g):
+            continue
+        pct = g["pct_chg"]
+        out.append({"board": b, "count": int(len(g)), "up": int((pct > 0).sum()), "down": int((pct < 0).sum()),
+                    "flat": int((pct == 0).sum()), "median": _trim(_num(pct.median())), "mean": _trim(_num(pct.mean())),
+                    "amount": _trim(_num(g["amount"].sum())),
+                    "amount_share": _trim(_num(g["amount"].sum() / total * 100)) if total else None,
+                    "limit_up": int(g["limit_up"].sum()), "limit_down": int(g["limit_down"].sum())})
+    return {"date": day, "boards": out}
 
 
 def limit_rate(code: pd.Series, name: pd.Series, date: pd.Series) -> pd.Series:

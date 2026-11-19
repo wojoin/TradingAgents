@@ -169,8 +169,9 @@ export interface MarketStats {
 // The day's limit moves: limit-ups by how many days in a row (连板), 炸板, limit-downs.
 // 申万一级 industries over the last N trading days (the heat map) and their valuation.
 export interface SectorRow {
-  name: string
+  name: string                  // 二级: 一级-二级
   code: string
+  sw1: string                   // its 申万一级 industry
   pct: (number | null)[]        // daily change (%), one per ``dates``
   cum: number | null            // compounded over the N days (%)
   cum5: number | null
@@ -186,6 +187,7 @@ export interface MarketSectors {
   end: string | null
   as_of: string                 // the 申万 day shown (the day picked, or the last before it)
   days: number
+  level: 'sw1' | 'sw2'
   dates: string[]
   industries: SectorRow[]
   since: string
@@ -220,6 +222,129 @@ export interface MarketMargin {
   as_of: string
   note: string | null
   days: { date: string; total: number | null; fin: number | null; fin_buy: number | null; sh: number | null; sz: number | null; chg: number | null }[]
+}
+
+// 市场广度综合研判: each breadth indicator's state judged by what followed it here.
+export interface VerdictStats { days: number; up5: number | null; avg5: number | null; up20: number | null; avg20: number | null }
+export interface VerdictRow {
+  step: '定趋势' | '找时机' | '验真伪'
+  name: string
+  reading: string
+  state: string | null
+  lean: string                   // 偏多 / 短期偏多 / 中性 / 短期偏空 / 偏空 / 无数据
+  score: number
+  reason: string
+  history: VerdictStats | null
+}
+export interface BreadthVerdict {
+  date: string
+  index_date: string | null
+  baseline: VerdictStats
+  history_from: string
+  history_to: string
+  rows: VerdictRow[]
+  steps: Record<'trend' | 'timing' | 'check', { score: number; lean: string; text: string }>
+  conclusion: { short: number; short_word: string; mid: number; mid_word: string; joint: VerdictStats; summary: string; headline: string; points: string[];
+                watch: (VerdictStats & { signal: string })[]; text: string }
+}
+
+// The reading the card would have given on each day of a span, and how the market then did.
+export interface VerdictDay {
+  date: string
+  close: number | null           // 中证全指
+  short: number; short_word: string
+  mid: number; mid_word: string
+  leans: Record<string, string>
+  steps: Record<'定趋势' | '找时机' | '验真伪', number>
+  f5: number | null              // the 中证全指 over the next 5 / 20 days (%); null until known by the span's end
+  f20: number | null
+}
+export interface VerdictHits { days: number; right: number; rate: number | null; avg: number | null }
+export interface VerdictHistory {
+  range: StatsRange
+  start: string
+  end: string
+  days: VerdictDay[]
+  accuracy: Record<'short' | 'mid', { bull: VerdictHits; bear: VerdictHits; all_up: number | null }>
+}
+
+// The day's stocks by board.
+export interface BoardRow {
+  board: '主板' | '创业板' | '科创板' | '北交所'
+  count: number
+  up: number
+  down: number
+  flat: number
+  median: number | null
+  mean: number | null
+  amount: number | null
+  amount_share: number | null
+  limit_up: number
+  limit_down: number
+}
+export interface MarketBoards { date: string; boards: BoardRow[] }
+
+// 同花顺's concept boards (latest day only); money in yuan, by 同花顺's measure.
+export interface ConceptRow {
+  name: string
+  pct: number | null
+  count: number | null
+  inflow: number | null
+  outflow: number | null
+  net: number | null
+  leader?: string | null
+  leader_pct?: number | null
+}
+export interface MarketConcepts {
+  date: string
+  span: FlowSpan
+  available: boolean
+  note?: string
+  count?: number
+  up?: number
+  net?: number | null
+  concepts?: ConceptRow[]
+}
+
+// A concept's stocks: Eastmoney's board of the same name, kept locally and checked monthly.
+export interface ConceptStock { code: string; name: string; pct: number | null; close: number | null; amount: number | null; industry: string | null }
+export interface ConceptChange { date: string; added: { code: string; name: string }[]; removed: { code: string; name: string }[] }
+export interface ConceptStocks {
+  concept: string
+  available: boolean
+  note?: string
+  em_name?: string               // the matched board's name at its source
+  matched?: 'exact' | 'loose'
+  provider?: 'em' | 'sina'       // Eastmoney, or Sina when Eastmoney fails or has no such board
+  provider_note?: string | null  // why Sina
+  tried?: { source: string; error: string | null }[]   // when none had it: each source and why
+  date?: string | null
+  source?: 'cache' | 'network' | 'stale'   // from disk / just fetched / Eastmoney failed, disk used
+  fetched?: string
+  checked?: string
+  count?: number
+  up?: number
+  down?: number
+  median?: number | null
+  last_change?: ConceptChange | null
+  stocks?: ConceptStock[]
+}
+
+// A report period's 业绩预告 (one a stock: the net profit attributable to shareholders).
+export interface ForecastRow { code: string; name: string; type: string; chg: number | null; date: string; industry: string | null; what: string }
+export interface MarketForecasts {
+  date: string
+  available: boolean
+  note?: string
+  period?: string
+  periods: Record<string, number>       // period -> forecasts announced so far
+  count?: number
+  good?: number
+  good_share?: number | null
+  types?: { type: string; count: number; good: boolean }[]
+  industries?: { name: string; count: number; good: number; good_share: number | null; median_chg: number | null }[]
+  best?: ForecastRow[]
+  latest?: ForecastRow[]
 }
 
 // QVIX: the 50ETF option volatility index (China's VIX).
@@ -347,6 +472,33 @@ export interface BreadthDay {
   m_prem: number | null          // 涨停溢价 (−5% … +5% on 0–100)
   m_promo: number | null         // 晋级率 (0 … 40%)
   m_height: number | null        // 空间板 (1 … 8 boards)
+  conc100: number | null         // 成交集中度: the 100 busiest stocks' share of the amount traded (%)
+  conc5pct: number | null        //   and the busiest 5% of stocks'
+  amount: number | null          // the market's amount traded (yuan)
+  board_主板: number | null       // each board's median change (%)
+  board_创业板: number | null
+  board_科创板: number | null
+  board_北交所: number | null
+  trin_amt: number | null        // TRIN_额: (rising ÷ falling stocks) ÷ (their amount traded ratio)
+  trin_vol: number | null        // TRIN_量: the same with volume
+  trin_amt10: number | null      // their 10-day averages
+  trin_vol10: number | null
+  trin_amt10_rank: number | null // where the 10-day averages sit among the past 250 days (%)
+  trin_vol10_rank: number | null
+  mcl_ratio: number | null       // (rising − falling) ÷ (rising + falling) × 1000
+  mcl_osc: number | null         // McClellan oscillator: its 19-day EMA − 39-day EMA
+  mcl_sum: number | null         // MSI, McClellan summation index: 19 × EMA39 − 9 × EMA19 (the oscillator summed from the start of time)
+  msi_cross: number | null       // +1 / −1 on the days MSI turns positive / negative, else 0
+  ma250: number | null           // share of stocks above their 250-day MA (%)
+  adr: number | null             // 涨跌比: rising ÷ falling stocks
+  adr10: number | null           //   its 10-day average
+  adr10_rank: number | null      //   where that sits among the past 250 days (%)
+  abi: number | null             // 绝对广量: |rising − falling| ÷ (rising + falling) (%)
+  abi10: number | null
+  thrust: number | null          // 广度推力: 10-day EMA of rising ÷ (rising + falling)
+  thrust_signal: boolean | null  // a breadth thrust fired this day (from under 0.40 to over 0.615 in 10 days)
+  ud_amt: number | null          // rising stocks' amount traded ÷ falling stocks'
+  ud_vol: number | null          //   and volume
   [size: `size_${string}`]: number | null   // median change of a size band (%): size_大盘 …
 }
 export interface MarketBreadth {
@@ -514,12 +666,22 @@ export const api = {
   marketCalendar: () => request<MarketCalendar>('/api/market/calendar'),
   marketStats: (range: StatsRange, end?: string) =>
     request<MarketStats>(`/api/market/stats?range=${range}${end ? `&end=${end}` : ''}`),
-  marketSectors: (days: number, end?: string) =>
-    request<MarketSectors>(`/api/market/sectors?days=${days}${end ? `&end=${end}` : ''}`),
+  marketSectors: (days: number, end?: string, level: 'sw1' | 'sw2' = 'sw1') =>
+    request<MarketSectors>(`/api/market/sectors?days=${days}&level=${level}${end ? `&end=${end}` : ''}`),
   marketCrowding: (end?: string) => request<MarketCrowding>(`/api/market/crowding${end ? `?end=${end}` : ''}`),
   marketValuation: (end?: string) => request<MarketValuation>(`/api/market/valuation${end ? `?end=${end}` : ''}`),
   marketMargin: (range: StatsRange, end?: string) =>
     request<MarketMargin>(`/api/market/margin?range=${range}${end ? `&end=${end}` : ''}`),
+  breadthVerdictHistory: (range: StatsRange, end?: string) =>
+    request<VerdictHistory>(`/api/market/breadth/verdict/history?range=${range}${end ? `&end=${end}` : ''}`),
+  breadthVerdict: (date?: string) => request<BreadthVerdict>(`/api/market/breadth/verdict${date ? `?date=${date}` : ''}`),
+  marketBoards: (date?: string) => request<MarketBoards>(`/api/market/boards${date ? `?date=${date}` : ''}`),
+  marketConcepts: (span: FlowSpan, date?: string) =>
+    request<MarketConcepts>(`/api/market/concepts?span=${span}${date ? `&date=${date}` : ''}`),
+  marketConceptStocks: (name: string, date?: string) =>
+    request<ConceptStocks>(`/api/market/concepts/${encodeURIComponent(name)}/stocks${date ? `?date=${date}` : ''}`),
+  marketForecasts: (date?: string, period?: string) =>
+    request<MarketForecasts>(`/api/market/forecasts?${new URLSearchParams({ ...(date ? { date } : {}), ...(period ? { period } : {}) })}`),
   marketQvix: (range: StatsRange, end?: string) =>
     request<MarketQvix>(`/api/market/qvix?range=${range}${end ? `&end=${end}` : ''}`),
   marketFlow: (range: StatsRange, end?: string) =>
