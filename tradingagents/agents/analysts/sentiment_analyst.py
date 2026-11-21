@@ -42,6 +42,7 @@ from tradingagents.agents.structured import (
     invoke_structured_or_freetext,
 )
 from tradingagents.agents.tools import get_news
+from tradingagents.dataflows.market_context import get_market_temperature
 from tradingagents.dataflows.symbols import a_share_code
 from tradingagents.dataflows.vendors.akshare import sentiment as ashare_sentiment
 from tradingagents.dataflows.vendors.reddit import (
@@ -98,7 +99,8 @@ def create_sentiment_analyst(llm):
                 end_date=end_date,
                 news_block=news_block,
                 fund_block=_ashare_block(ashare_sentiment.get_fund_sentiment, ticker, end_date),
-                market_block=_ashare_block(ashare_sentiment.get_market_sentiment, end_date, ticker),
+                market_block=_ashare_block(ashare_sentiment.get_market_sentiment, end_date, ticker)
+                + "\n\n" + _ashare_block(get_market_temperature, end_date, ticker),
                 popularity_block=_ashare_block(ashare_sentiment.get_popularity, ticker, end_date),
             )
         else:
@@ -260,6 +262,7 @@ def _build_ashare_system_message(
 
 ### Block 2 — 市场情绪 (market sentiment): the whole market's speculative temperature
 涨停 / 炸板 / 跌停 counts, 炸板率, 最高连板 (consecutive-limit-up height), 连板梯队, and 昨日涨停今日平均涨幅 (limit-up premium), plus whether {ticker} itself sat in those pools.
+Then the market's temperature as the 行情 page reads it: 情绪综合分 and its six parts (0–100) over 5 days, QVIX (implied volatility, A-shares' fear gauge) and its percentile, the margin balance and its 1 / 5 / 20-day change (leveraged money), the whole market's P/E percentile and equity risk premium, and the limit-up themes (主线题材) of the last 5 days with whether {ticker} was among them. Use them to judge how much risk the market is willing to take and whether {ticker}'s theme is where the speculative money is; they describe the market, not {ticker}.
 
 <start_of_market_sentiment>
 {market_block}

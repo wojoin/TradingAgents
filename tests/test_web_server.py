@@ -1780,3 +1780,98 @@ def test_the_store_has_a_monthly_cache_key(monkeypatch):
 
     monkeypatch.setattr(store, "last_closed_trade_date", lambda now=None: dt.date(2026, 11, 20))
     assert store._key("monthly") == ("2026M11", False)
+
+
+def test_market_breadth_report_stops_at_the_analysis_date(monkeypatch):
+    import pandas as pd
+
+    from tradingagents.dataflows import market_breadth
+    from web.server import breadth, breadth_verdict, market
+
+    days = [f"2026-11-{d:02d}" for d in (16, 17, 18, 19, 20)]
+    n = len(days)
+    table = pd.DataFrame({c: [float("nan")] * n for c in breadth.columns()}, index=days)
+    table["up_pct"] = [70.0, 20.0, 20.0, 30.0, 5.6]
+    table["trin_amt"] = [0.9, 0.5, 0.4, 0.3, 0.27]
+    table["trin_vol"] = [0.9, 0.6, 0.5, 0.4, 0.22]
+    table["mcl_osc"] = [1.0, -1.0, -2.0, -3.0, -4.0]
+    table["mcl_raw"] = [10.0, -20.0, -30.0, -40.0, -642.7]
+    table["amt_gap"] = [1.0, 2.0, 3.0, 4.0, 12.46]
+    stats = pd.DataFrame({"date": days, "up": [3500, 1000, 1000, 1500, 313], "down": [1500, 4000, 4000, 3500, 5235],
+                          "flat": [50] * n, "limit_up": [60, 30, 30, 30, 30], "limit_down": [5, 60, 60, 60, 68],
+                          "amount": [2e12, 1.5e12, 1.4e12, 1.3e12, 1.43e12]})
+    monkeypatch.setattr(market, "_days_on_record", lambda end: [d for d in days if d <= end])
+    monkeypatch.setattr(market, "_span_stats", lambda span: (stats, None))
+    monkeypatch.setattr(market, "index_closes", lambda name: pd.DataFrame({"date": days, "close": [3602.57, 3584.58, 3587.83, 3577.62, 3533.79]}))
+    monkeypatch.setattr(breadth, "_key", lambda: ("k",))
+    monkeypatch.setattr(breadth, "_table", lambda key: table)
+    monkeypatch.setattr(breadth_verdict, "verdict", lambda d: (_ for _ in ()).throw(LookupError("no index")))
+
+    text = market_breadth.get_market_breadth("2026-11-19", 10)
+    assert "2026-11-19" in text and "2026-11-20" not in text           # nothing after the analysis date
+    assert "| 2026-11-16 | 3602.57" in text and "放量" not in text.split("## Market structure")[0].split("2026-11-17")[0]
+    last = market_breadth.get_market_breadth("2026-11-20", 2)
+    assert "2026-11-18" not in last.split("## Day by day")[1].split("## Market")[0]   # two days only
+    assert "| 313/5235/50 | 5.60%" in last and "| 0.270 | 0.220 |" in last and "-642.7" in last and "30/68" in last
+    assert "## Market structure on 2026-11-20: 少数股抱团" in last
+
+
+def test_industry_context_ranks_the_stock_among_its_peers(monkeypatch):
+    from tradingagents.dataflows import market_context
+    from web.server import market, sectors
+
+    def row(code, name, pct, p5, pe, mv, l3="数字芯片设计"):
+        return {"code": code, "name": name, "pct_chg": pct, "pct_5d": p5, "pe_ttm": pe, "total_mv": mv,
+                "industry": "电子", "sub_industry": "半导体", "industry3": l3}
+    rows = [row("688256", "寒武纪", -1.5, -6.0, 138.8, 5e11), row("688041", "海光信息", -7.0, -15.0, 37.7, 6e11),
+            row("688521", "芯原股份", -8.0, -16.0, -5.0, 1e11), row("603501", "豪威集团", -3.0, -3.4, 30.0, 1.5e11, "模拟芯片设计")]
+    monkeypatch.setattr(market, "_days_on_record", lambda end: ["2026-11-19", "2026-11-20"])
+    monkeypatch.setattr(market, "market_table", lambda day: {"rows": rows})
+    monkeypatch.setattr(sectors, "sectors", lambda end, days, level: {"industries": (
+        [{"name": "电子", "cum5": -9.23, "cum20": -17.6, "pe": 34.5, "pe_rank": 22, "pb_rank": 60, "dy": 0.53},
+         {"name": "银行", "cum5": 1.0, "cum20": 3.0, "pe": 6.0, "pe_rank": 50, "pb_rank": 40, "dy": 5.0}]
+        if level == "sw1" else [{"name": "电子-半导体", "cum5": -8.35, "cum20": -13.73, "pe": 39.8, "pe_rank": 6, "pb_rank": 65, "dy": 0.23}])})
+    monkeypatch.setattr(sectors, "crowding", lambda end: (_ for _ in ()).throw(ConnectionError("down")))
+
+    text = market_context.get_industry_context("688256.SS", "2026-11-20")
+    assert "一级 电子 · 二级 半导体 · 三级 数字芯片设计" in text
+    # 三级: three peers; 寒武纪 is the strongest today and over 5 days, second by market value;
+    # the peers' P/E median leaves out the loss-maker.
+    assert "| 三级 数字芯片设计 | 3 | -7.00% | 1/3 | -15.00% | 1/3 | 88.2 | 2/3 |" in text
+    assert "| 一级 电子 | 4 |" in text and "| 电子 | -9.23% | -17.60% | 2/2 | 34.5 | 22% |" in text
+    assert "| 电子-半导体 | -8.35% |" in text
+    assert "## 行业拥挤度" in text and "unavailable: ConnectionError" in text     # one section down, the rest stand
+    assert "only" in market_context.get_industry_context("NVDA", "2026-11-20")
+
+
+def test_market_temperature_marks_the_stocks_own_limit_ups(monkeypatch):
+    import pandas as pd
+
+    from tradingagents.dataflows import market_context
+    from web.server import breadth, extras, limit_detail, market, sectors
+
+    days = ["2026-11-19", "2026-11-20"]
+    table = pd.DataFrame({"mood": [34.0, 35.0], **{f"m_{k}": [10.0, 20.0] for k in breadth.MOOD_PARTS}}, index=days)
+    monkeypatch.setattr(market, "_days_on_record", lambda end: [d for d in days if d <= end])
+    monkeypatch.setattr(breadth, "_key", lambda: ("k",))
+    monkeypatch.setattr(breadth, "_table", lambda key: table)
+    monkeypatch.setattr(extras, "qvix", lambda end, rng: {"since": "2015-02-09", "rank": 14, "median": 19.25,
+                                                         "days": [{"date": "2026-11-18", "close": 14.8}]})
+    monkeypatch.setattr(extras, "margin", lambda end, rng: {"days": [{"date": "2026-11-18", "total": 2.2306e12},
+                                                                    {"date": "2026-11-19", "total": 2.2151e12}]})
+    monkeypatch.setattr(sectors, "valuation", lambda end: {"days": [
+        {"date": "2005-01-04", "pe": 21.0, "pb": 2.0, "dy": 1.2, "y10": 5.2, "erp": -0.5},
+        {"date": "2026-11-20", "pe": 15.0, "pb": 1.66, "dy": 1.92, "y10": 1.58, "erp": 5.09}]})
+    monkeypatch.setattr(extras, "themes", lambda date, n, top=10: {"date": "2026-11-20", "dates": days, "have": days,
+                        "themes": [{"name": "光刻胶", "today": 2, "total": 7, "days_on": 2,
+                                    "stocks": [{"code": "603004"}, {"code": "688256"}]}]})
+    monkeypatch.setattr(limit_detail, "details", lambda d: pd.DataFrame(
+        {"code": ["688256"], "reason": ["光刻胶+AI芯片"]}) if d == "2026-11-20" else pd.DataFrame())
+
+    text = market_context.get_market_temperature("2026-11-20", "688256.SS")
+    assert "| 2026-11-20 | 35 | 20 |" in text and "QVIX" in text and "14% 分位" in text
+    assert "较 1 日前 -155亿" in text and "ERP（1/PE − 国债收益率）5.09%" in text
+    assert "- 光刻胶: 2 / 7 / 2 天 ← 本股当日涨停属此题材" in text
+    assert "2026-11-20 涨停（光刻胶+AI芯片）" in text
+    earlier = market_context.get_market_temperature("2026-11-19", "688256.SS")
+    assert "| 2026-11-20 |" not in earlier and "temperature to 2026-11-19" in earlier   # nothing after the date

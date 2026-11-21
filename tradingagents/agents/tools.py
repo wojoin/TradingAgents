@@ -11,6 +11,8 @@ from langgraph.prebuilt import InjectedState
 
 from tradingagents.dataflows.date_window import as_of, as_of_window
 from tradingagents.dataflows.errors import NoMarketDataError, VendorUnavailableError
+from tradingagents.dataflows.market_breadth import get_market_breadth as get_breadth_report
+from tradingagents.dataflows.market_context import get_industry_context as get_industry_report
 from tradingagents.dataflows.markets import build_verified_market_snapshot
 from tradingagents.dataflows.router import no_data_available, route_to_vendor, vendor_unavailable
 from tradingagents.dataflows.symbols import a_share_code
@@ -93,6 +95,49 @@ def get_verified_market_snapshot(
         return vendor_unavailable("get_verified_market_snapshot", exc)
     except NoMarketDataError as exc:
         return no_data_available(exc)
+
+
+@tool
+def get_market_breadth(
+    symbol: Annotated[str, InjectedState("company_of_interest")],
+    curr_date: Annotated[str, "the current trading date, YYYY-mm-dd"],
+    look_back_days: Annotated[int, "trading days to show, up to 30"] = 10,
+    trade_date: Annotated[str, InjectedState("trade_date")] = "",
+) -> str:
+    """China A-share market breadth: the whole A-share market's day-by-day readings to the
+    analysis date (涨/跌/平, 涨家占比, 涨额占比 / 涨量占比, 额价差 / 量价差, TRIN_额 / TRIN_量,
+    净新高60, MCL, 涨停 / 跌停, P20 / P60 / P250 above their averages, 全A成交额 with 放量 / 缩量),
+    the market structure each day reads as (普涨, 少数股抱团, 抱团瓦解, 无差别下跌 …) and the
+    three-step breadth verdict (trend → timing → confirmation). It describes the market the
+    stock trades in, not the stock itself; for China A-shares only.
+    """
+    if not a_share_code(symbol):
+        return "Market breadth (the whole A-share market's readings) is available for China A-shares only."
+    try:
+        return get_breadth_report(as_of(curr_date, trade_date), look_back_days)
+    except Exception as exc:  # noqa: BLE001 - backdrop data: an error must not end the run
+        return f"Market breadth is unavailable: {type(exc).__name__}: {str(exc)[:200]}"
+
+
+@tool
+def get_industry_context(
+    symbol: Annotated[str, InjectedState("company_of_interest")],
+    curr_date: Annotated[str, "the current trading date, YYYY-mm-dd"],
+    trade_date: Annotated[str, InjectedState("trade_date")] = "",
+) -> str:
+    """China A-share industry context: the stock's 申万 一级 / 二级 / 三级 industries; its change
+    today and over 5 days ranked among its peers at each level, with the peers' median change
+    and P/E and its market-value rank; the industries' change over 5 and 20 days and their rank,
+    their P/E with its percentile since 2021, P/B percentile and dividend yield; and the 一级
+    industry's crowding (its share of the market's turnover against the past year). For China
+    A-shares only.
+    """
+    if not a_share_code(symbol):
+        return "Industry context (申万 industries and peers) is available for China A-shares only."
+    try:
+        return get_industry_report(symbol, as_of(curr_date, trade_date))
+    except Exception as exc:  # noqa: BLE001 - context data: an error must not end the run
+        return f"Industry context is unavailable: {type(exc).__name__}: {str(exc)[:200]}"
 
 
 @tool

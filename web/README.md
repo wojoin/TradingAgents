@@ -170,12 +170,20 @@ pip install -e ".[web,ashare]"        # or: uv pip install -e ".[web,ashare]"
 ```bash
 web/start.sh     # backend on 127.0.0.1:8765, front end on http://127.0.0.1:5173
 web/stop.sh      # stops both
+web/restart.sh   # stop, then start (--backend: the backend only; --wait / --force: see below)
 ```
 
 `start.sh` uses the repository's `.venv` when there is one, runs `npm install` the
 first time, waits until both answer, and refuses a port another process holds (it
 lists the process). Ports: `TA_API_PORT`, `TA_WEB_PORT`. PIDs and logs are in
 `web/.run/`. `stop.sh` stops only what `start.sh` started.
+
+`restart.sh` is the way to load changed backend code (the backend keeps the code it started
+with; the front end reloads by itself, so `--backend` is usually enough). Restarting the backend
+ends any analysis in progress, so it refuses while one is running and lists them: `--wait`
+waits for them to finish and then restarts, `--force` restarts anyway. A server of this app
+on the port without a pid file (started by hand) is recognised by its command and directory
+and restarted too; any other process on the port is left alone.
 
 ### One process (built front end)
 

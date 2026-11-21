@@ -2,13 +2,21 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 from tradingagents.agents.analysts.turn import take_turn
 from tradingagents.agents.context import get_instrument_context_from_state, get_language_instruction
-from tradingagents.agents.tools import get_indicators, get_stock_data, get_verified_market_snapshot
+from tradingagents.agents.tools import (
+    get_indicators,
+    get_industry_context,
+    get_market_breadth,
+    get_stock_data,
+    get_verified_market_snapshot,
+)
 
 # The tools this analyst is offered; its tool node is built from the same tuple.
 TOOLS = (
     get_stock_data,
     get_indicators,
     get_verified_market_snapshot,
+    get_market_breadth,
+    get_industry_context,
 )
 
 
@@ -46,6 +54,8 @@ Volume-Based Indicators:
 - Select indicators that provide diverse and complementary information. Avoid redundancy (e.g., do not select both rsi and stochrsi). Also briefly explain why they are suitable for the given market context. When you tool call, please use the exact name of the indicators provided above as they are defined parameters, otherwise your call will fail. Please make sure to call get_stock_data first to retrieve the CSV that is needed to generate indicators. Then use get_indicators with the specific indicator names.
 
 Before writing the final report, call get_verified_market_snapshot for this ticker and the current date, and treat it as the source of truth for any exact OHLCV, price-level, or indicator-value claim. If another tool's output conflicts with the verified snapshot, flag the discrepancy rather than inventing a reconciled number. Do not claim historical validation, support/resistance bounces, or exact percentage moves unless they are directly supported by tool output with concrete dates and prices.
+
+For a China A-share, also call get_market_breadth for the current date (10 trading days is usually enough) to read the whole market the stock trades in: breadth (涨家占比, ADL), where the money goes (涨额占比, 额价差 / 量价差, TRIN_额 / TRIN_量: below 1 the money is with the risers), momentum (MCL), new highs and lows (净新高60), the share above the 20 / 60 / 250-day averages, limit moves and whether the market is 放量 or 缩量, the market structure (普涨, 少数股抱团, 抱团瓦解, 无差别下跌 …) and the breadth verdict. Include a short "Market backdrop" section: what the market structure is and how it is changing, and whether this stock is moving with the market or against it (e.g. one of the few risers in a 少数股抱团 market, or falling with a 无差别下跌). Treat breadth as the backdrop and a risk factor for timing, not as a signal about the stock itself, and quote its figures only from the tool output. Also call get_industry_context for the current date to place the stock among its 申万 industries and peers: whether its industry is leading or lagging the market over 5 and 20 days, and whether the stock is leading or lagging its 三级 / 二级 peers (relative strength). Add this to the "Market backdrop" section.
 
 Write a very detailed and nuanced report of the trends you observe. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."""
             + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""

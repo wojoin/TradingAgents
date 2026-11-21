@@ -202,6 +202,13 @@ class _LLM:
         return AIMessage(content="report")
 
 
+@pytest.fixture(autouse=True)
+def _no_real_market_temperature(monkeypatch):
+    """The market-temperature block reads the local store and the network: stubbed here."""
+    from tradingagents.agents.analysts import sentiment_analyst as sa
+    monkeypatch.setattr(sa, "get_market_temperature", lambda d, t: f"TEMPERATURE {d} {t}")
+
+
 def test_an_a_share_reads_akshare_blocks_not_stocktwits_or_reddit(monkeypatch):
     from tradingagents.agents.analysts import sentiment_analyst as sa
 
@@ -216,6 +223,7 @@ def test_an_a_share_reads_akshare_blocks_not_stocktwits_or_reddit(monkeypatch):
                                            "messages": []})
     assert out["sentiment_report"]
     assert "FUND 600519.SS 2026-11-13" in llm.prompt and "MARKET 2026-11-13" in llm.prompt
+    assert "TEMPERATURE 2026-11-13 600519.SS" in llm.prompt          # with block 2, the market's temperature
     assert "<unavailable: ConnectionError" in llm.prompt
     assert "东财新闻" in llm.prompt and "StockTwits" not in llm.prompt
 

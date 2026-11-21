@@ -62,6 +62,8 @@ DATED_TOOLS = [
     tools.get_indicators,
     tools.get_macro_indicators,
     tools.get_verified_market_snapshot,
+    tools.get_market_breadth,
+    tools.get_industry_context,
 ]
 
 
@@ -75,6 +77,8 @@ INSTRUMENT_TOOLS = [
     tools.get_stock_data, tools.get_indicators, tools.get_verified_market_snapshot,
     tools.get_fundamentals, tools.get_balance_sheet, tools.get_cashflow,
     tools.get_income_statement, tools.get_news, tools.get_insider_transactions,
+    tools.get_market_breadth,
+    tools.get_industry_context,
 ]
 
 
@@ -202,3 +206,47 @@ def test_propagate_rejects_a_future_date(monkeypatch):
     monkeypatch.setattr(tg, "get_current_date", lambda: "2026-09-10")
     with pytest.raises(ValueError, match="future"):
         object.__new__(tg.TradingAgentsGraph).propagate("AAPL", "2026-09-11")
+
+
+@pytest.mark.unit
+def test_market_breadth_is_clamped_to_the_run_date_and_only_for_a_shares():
+    graph = StateGraph(_State)
+    graph.add_node("tools", ToolNode([tools.get_market_breadth]))
+    graph.add_edge(START, "tools")
+    graph.add_edge("tools", END)
+    app = graph.compile()
+
+    def call(company):
+        with mock.patch.object(tools, "get_breadth_report", return_value="breadth") as report:
+            out = app.invoke({
+                "messages": [AIMessage("", tool_calls=[{"name": "get_market_breadth",
+                                                        "args": {"curr_date": "2026-09-14", "look_back_days": 5}, "id": "1"}])],
+                "trade_date": TRADE_DATE, "company_of_interest": company})
+        return report, out["messages"][-1].content
+
+    report, text = call("688256.SS")
+    assert text == "breadth" and report.call_args.args == (TRADE_DATE, 5)
+    report, text = call("NVDA")
+    assert not report.called and "China A-shares only" in text
+
+
+@pytest.mark.unit
+def test_industry_context_is_clamped_to_the_run_date_and_only_for_a_shares():
+    graph = StateGraph(_State)
+    graph.add_node("tools", ToolNode([tools.get_industry_context]))
+    graph.add_edge(START, "tools")
+    graph.add_edge("tools", END)
+    app = graph.compile()
+
+    def call(company):
+        with mock.patch.object(tools, "get_industry_report", return_value="industry") as report:
+            out = app.invoke({
+                "messages": [AIMessage("", tool_calls=[{"name": "get_industry_context",
+                                                        "args": {"curr_date": "2026-09-14"}, "id": "1"}])],
+                "trade_date": TRADE_DATE, "company_of_interest": company})
+        return report, out["messages"][-1].content
+
+    report, text = call("688256.SS")
+    assert text == "industry" and report.call_args.args == ("688256.SS", TRADE_DATE)
+    report, text = call("NVDA")
+    assert not report.called and "China A-shares only" in text

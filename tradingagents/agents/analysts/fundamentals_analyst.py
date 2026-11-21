@@ -8,6 +8,7 @@ from tradingagents.agents.tools import (
     get_corporate_events,
     get_fundamentals,
     get_income_statement,
+    get_industry_context,
     get_insider_transactions,
 )
 
@@ -19,6 +20,7 @@ TOOLS = (
     get_income_statement,
     get_insider_transactions,
     get_corporate_events,
+    get_industry_context,
 )
 
 
@@ -31,6 +33,7 @@ def create_fundamentals_analyst(llm):
             "You are a researcher tasked with analyzing fundamental information over the past week about a company. Please write a comprehensive report of the company's fundamental information such as financial documents, company profile, basic company financials, and company financial history to gain a full view of the company's fundamental information to inform traders. Make sure to include as much detail as possible. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
             + " Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."
             + " Use the available tools: `get_fundamentals` for comprehensive company analysis, `get_balance_sheet`, `get_cashflow`, and `get_income_statement` for specific financial statements, `get_insider_transactions` for recent insider buying and selling, and `get_corporate_events` for a China A-share's lock-up expiries (supply overhang), earnings preannouncements and preliminary results."
+            + " For a China A-share, also call `get_industry_context` to value the company against its industry: its P/E TTM against the median of its 申万 三级 / 二级 / 一级 peers, its market-value rank among them (leader or small player), the industry's P/E and P/B percentile since 2021 and its dividend yield, and whether the industry is crowded (crowding ≥ 80: heavily traded, a pull-back risk). State whether the stock is cheap or dear relative to its peers, not only to its own history."
             + get_language_instruction()
         )
 
