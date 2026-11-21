@@ -222,3 +222,153 @@ def get_market_temperature(curr_date: str, symbol: str | None = None) -> str:
     out.append("These describe the whole market, not this stock: they set how much risk the market is taking, "
                "and whether the stock's theme is where the money is.")
     return "\n".join(out)
+
+
+# ---------------------------------------------------------------------------
+# 超跌反转 signal (the backtested buy combination)
+# ---------------------------------------------------------------------------
+def rebound_data(code: str, end: str | None = None) -> dict:
+    """The stock's 超跌反转 signals since listing (to ``end``), today's setup and the market
+    condition, from the local store; for the K-line markers and the analyst."""
+    from tradingagents.dataflows import rebound_signal as rs
+    market, _, _, breadth = _web()
+    hist = market.history(code, end)
+    bars = pd.DataFrame(hist["bars"]).rename(columns={"time": "date"})
+    if end:
+        bars = bars[bars["date"] <= end]
+    if len(bars) < 60:
+        return {"signals": [], "now": None, "market": None, "rule": rs.RULE, "stats": rs.STATS,
+                "note": "上市不足 60 个交易日"}
+    try:
+        t = breadth._table(breadth._key())
+        mcl = t["mcl_osc"].dropna()
+        mcl = mcl[mcl.index <= bars["date"].iloc[-1]]
+    except Exception as e:  # noqa: BLE001 - the signals stand without the market condition
+        log.info("market MCL unavailable: %s", e)
+        mcl = pd.Series(dtype=float)
+    sig = rs.signals(bars, mcl)
+
+    def book(trades: pd.DataFrame) -> tuple[set, dict]:
+        """One position at a time: a purple 反 (the market condition held) buys only when nothing
+        is held; a 反 while holding, or a grey one, is shown but not bought. Buys and sells alternate."""
+        taken, skip, free_from = set(), {}, ""
+        for r in sig.itertuples():
+            if r.market_ok is not True:
+                skip[r.date] = "市场条件不满足，不买" if r.market_ok is False else "无市场数据（2024-09 前），不买"
+                continue
+            if free_from is None or r.date < free_from:
+                skip[r.date] = "持仓中，不重复买入"
+                continue
+            taken.add(r.date)
+            t = trades.loc[r.date] if r.date in trades.index else None
+            exit_date = t["exit_date"] if t is not None else None
+            free_from = exit_date if isinstance(exit_date, str) else None      # None: still held
+        return taken, skip
+
+    trades = rs.exits(bars, sig).set_index("date") if len(sig) else pd.DataFrame()
+    taken, skip = book(trades)
+    best_trades = (rs.exits(bars, sig, rs.BEST_TAKE_PROFIT, rs.BEST_STOP_LOSS, rs.BEST_MAX_DAYS).set_index("date")
+                   if len(sig) else pd.DataFrame())
+    best_taken, _ = book(best_trades)
+    num = lambda v, nd=2: None if v is None or pd.isna(v) else round(float(v), nd)  # noqa: E731
+
+    def trade(d, trades=trades, taken=taken):
+        if d not in taken or d not in trades.index:
+            return None
+        t = trades.loc[d]
+        txt = lambda v: v if isinstance(v, str) else None  # noqa: E731 - NaN (no date yet) as null
+        return {"entry_date": txt(t["entry_date"]), "exit_date": txt(t["exit_date"]), "sell_date": txt(t.get("sell_date")),
+                "exit": t["exit"], "ret": num(t["ret"]), "days": int(t["days"]) if pd.notna(t["days"]) else None,
+                "peak_date": txt(t.get("peak_date")), "peak_ret": num(t.get("peak_ret")),
+                "entry_price": num(t.get("entry_price")), "exit_price": num(t.get("exit_price")),
+                "target_price": num(t.get("target_price")), "stop_price": num(t.get("stop_price"))}
+    out = [{"date": r.date, "trigger": r.trigger, "oversold": r.oversold, "adx": num(r.adx, 1), "mdi": num(r.mdi, 1),
+            "pdi": num(r.pdi, 1), "amt_ratio": num(r.amt_ratio), "close": num(r.close), "stop": num(r.stop),
+            "market_ok": r.market_ok, "trade": trade(r.date), "skip": skip.get(r.date)} for r in sig.itertuples()]
+    closing = {trades.loc[d, "sell_date"] for d in taken if d in trades.index
+               and isinstance(trades.loc[d, "sell_date"], str) and trades.loc[d, "exit"] == "卖"}
+    sells = rs.sell_signals(bars, mcl, closing)
+    sell_out = [{"date": r.date, "reason": r.reason, "gain20": num(r.gain20, 1), "adx": num(r.adx, 1),
+                 "close": num(r.close), "market_weak": r.market_weak, "closes": r.date in closing}
+                for r in sells.itertuples()]
+    now = rs.setup_now(bars)
+    market_now = None
+    if len(mcl) > 3:
+        market_now = {"date": mcl.index[-1], "mcl": num(mcl.iloc[-1], 1), "mcl_3d_ago": num(mcl.iloc[-4], 1),
+                      "ok": bool(mcl.iloc[-1] > mcl.iloc[-4])}
+    best = [{"date": d, **trade(d, best_trades, best_taken)} for d in sorted(best_taken)
+            if trade(d, best_trades, best_taken) is not None]
+    return {"best": {"rule": rs.BEST_RULE, "stats": rs.BEST_STATS, "trades": best}, "signals": out, "now": {k: (num(v, 1) if isinstance(v, float) else v) for k, v in now.items()},
+            "market": market_now, "market_since": mcl.index[0] if len(mcl) else None,
+            "rule": rs.RULE, "stats": rs.STATS,
+            "sells": sell_out, "sell_rule": rs.SELL_RULE, "sell_stats": rs.SELL_STATS}
+
+
+def get_rebound_signal(symbol: str, curr_date: str) -> str:
+    code = a_share_code(symbol)
+    if not code:
+        return "The 超跌反转 signal is computed for China A-shares only."
+    try:
+        d = rebound_data(code, curr_date)
+    except Exception as e:  # noqa: BLE001
+        return f"The 超跌反转 signal is unavailable: {type(e).__name__}: {str(e)[:160]}"
+    out = [f"# 超跌反转信号（组合 A）：{code}，截至 {curr_date}", "", f"规则：{d['rule']}", "", f"历史统计：{d['stats']}", ""]
+    n = d.get("now")
+    if n:
+        missing = [x for x, ok in (("强下降趋势（ADX>25 且 −DI>+DI）", n["downtrend"]), ("超卖", n["oversold"])) if not ok]
+        out += [f"## 当前（{n['date']}）", "",
+                f"ADX {n['adx']}，+DI {n['pdi']}，−DI {n['mdi']}；%B {n['pctb']}，WR10 {n['wr10']}，RSI6 {n['rsi6']}；DIF {n['dif']}。",
+                "形态条件已具备，等待触发（MACD 零轴下方金叉或 KDJ 金叉）与放量确认。" if not missing
+                else f"形态条件未具备：缺 {'、'.join(missing)}。", ""]
+    m = d.get("market")
+    if m:
+        out += [f"市场条件（{m['date']}）：全市场 MCL {m['mcl']}，3 日前 {m['mcl_3d_ago']} → {'满足（走高）' if m['ok'] else '不满足（未走高）'}。", ""]
+    recent = d["signals"][-5:]
+    if recent:
+        out += ["## 最近的买入信号（最多 5 次）与卖出", "",
+                "| 信号日 | 触发 | 超卖 | ADX | 成交额/5日均 | 收盘 | 市场条件 | 买入（次日开盘） | 卖出 | 收益（复权、未扣成本） |",
+                "|---|---|---|---|---|---|---|---|---|---|"]
+        for s in recent:
+            mk = "—" if s["market_ok"] is None else ("满足" if s["market_ok"] else "不满足")
+            t = s.get("trade") or {}
+            ex = {"卖": f"{t.get('exit_date')} 开盘卖出（{t.get('sell_date')} 出现「卖」）",
+                  "盈": f"{t.get('exit_date')} 止盈 +30%（{t.get('exit_price')}）",
+                  "止": f"{t.get('exit_date')} 止损 −15%（{t.get('exit_price')}）",
+                  "期": f"{t.get('exit_date')} 持满 20 日卖出",
+                  "持有中": f"持有中（{t.get('days')} 日；止盈价 {t.get('target_price')}，止损价 {t.get('stop_price')}）",
+                  "待买入": "—"}.get(t.get("exit"), s.get("skip") or "—")
+            ret = "—" if t.get("ret") is None else f"{t['ret']:+.2f}%"
+            out.append(f"| {s['date']} | {s['trigger']} | {s['oversold']} | {s['adx']} | {s['amt_ratio']} | {s['close']} "
+                       f"| {mk} | {t.get('entry_date') or '次日'} | {ex} | {ret} |")
+        out.append("")
+    else:
+        out += ["上市以来没有出现完整信号。", ""]
+    b = d.get("best") or {}
+    if b:
+        out += ["## ★ 单笔最优规则（胜率与单笔收益最高，持有更久）", "", f"规则：{b['rule']}", "", f"历史统计：{b['stats']}", ""]
+        bt = b.get("trades", [])[-3:]
+        if bt:
+            out += ["| 信号日 | 买入 | 卖出 | 收益 |", "|---|---|---|---|"]
+            for t in bt:
+                how = {"盈": "止盈 +25%", "止": "止损 −30%", "期": "持满 250 日", "卖": "卖出信号", "持有中": "持有中"}.get(t["exit"], t["exit"])
+                ret = "—" if t.get("ret") is None else f"{t['ret']:+.2f}%"
+                out.append(f"| {t['date']} | {t.get('entry_date')} | {t.get('exit_date') or '—'} {how} | {ret} |")
+            out.append("")
+    out += ["## 卖出 / 规避信号", "", f"规则：{d['sell_rule']}", "", f"历史统计：{d['sell_stats']}", ""]
+    if n:
+        hot = n.get("gain20") is not None and n["gain20"] > 30
+        out.append(f"当前：近 20 日涨幅 {n['gain20']:+.1f}%{'（> 30%，处于卖出 / 规避区）' if hot else ''}；"
+                   f"{'强上升趋势（ADX>25 且 +DI>−DI）' if n.get('uptrend') else '非强上升趋势'}。" if n.get("gain20") is not None
+                   else "当前：上市不足 20 日。")
+        out.append("")
+    recent_sells = d.get("sells", [])[-5:]
+    if recent_sells:
+        out += ["| 日期 | 原因 | 收盘 | 市场条件 |", "|---|---|---|---|"]
+        for x in recent_sells:
+            mk = "—" if x["market_weak"] is None else ("走弱（信号更强）" if x["market_weak"] else "走强")
+            out.append(f"| {x['date']} | {x['reason']} | {x['close']} | {mk} |")
+        out.append("")
+    out.append("Use: a statistical edge across many stocks, not a forecast for this one; a signal within the last "
+               "few days supports a rebound case (by the rule: +30% target, −15% stop, 20 days at most, or the next 卖). A recent sell / avoid signal says the "
+               "stock has tended to lag the market for about 20 days after such a run, not that it must fall.")
+    return "\n".join(out)

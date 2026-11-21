@@ -144,6 +144,24 @@ def test_a_report_id_resolves_only_to_a_saved_report(env, bad):
     assert client.get("/api/reports/300308.SZ_20261115_012528/download?format=exe").status_code == 422
 
 
+def test_a_deleted_report_goes_to_the_trash_and_leaves_the_list(env):
+    client, _, root, _ = env
+    rid = "300308.SZ_20261115_012528"
+    write_report(root)
+    r = client.delete(f"/api/reports/{rid}")
+    assert r.status_code == 200 and r.json()["deleted"] == rid
+    assert client.get("/api/reports").json() == [] and client.get(f"/api/reports/{rid}").status_code == 404
+    assert (root / ".trash" / rid / "complete_report.md").is_file()          # kept: recoverable
+    assert client.delete(f"/api/reports/{rid}").status_code == 404
+    # The same report written and deleted again: the first copy in the trash is kept.
+    write_report(root)
+    client.delete(f"/api/reports/{rid}")
+    assert len(list((root / ".trash").iterdir())) == 2
+    for bad in ("..%2Freports", ".trash", "nope"):     # never resolved to a path: nothing removed
+        assert client.delete(f"/api/reports/{bad}").status_code in (404, 405)
+    assert (root / ".trash").is_dir() and len(list((root / ".trash").iterdir())) == 2
+
+
 def test_progress_follows_the_graph_through_each_team():
     events = []
     run = Run(id="r", ticker="300308", symbol="300308.SZ", trade_date=TODAY)
@@ -1875,3 +1893,255 @@ def test_market_temperature_marks_the_stocks_own_limit_ups(monkeypatch):
     assert "2026-11-20 涨停（光刻胶+AI芯片）" in text
     earlier = market_context.get_market_temperature("2026-11-19", "688256.SS")
     assert "| 2026-11-20 |" not in earlier and "temperature to 2026-11-19" in earlier   # nothing after the date
+
+
+def test_the_rebound_endpoint_serves_a_shares_only_and_stops_at_end(env, monkeypatch):
+    from tradingagents.dataflows import market_context
+
+    seen = {}
+
+    def fake(code, end=None):
+        seen.update(code=code, end=end)
+        return {"signals": [], "now": None, "market": None, "rule": "r", "stats": "s"}
+    monkeypatch.setattr(market_context, "rebound_data", fake)
+    client = env[0]
+    assert client.get("/api/stock/600519.SS/rebound?end=2026-11-13").json()["rule"] == "r"
+    assert seen == {"code": "600519", "end": "2026-11-13"}
+    assert client.get("/api/stock/NVDA/rebound").status_code == 404
+
+
+def test_rebound_data_flags_the_sell_that_closes_a_trade(monkeypatch):
+    import numpy as np
+    import pandas as pd
+
+    from tradingagents.dataflows import market_context
+    from web.server import breadth, market
+
+    calm = 100 + np.sin(np.arange(80) / 3)
+    slide = calm[-1] * np.cumprod(np.full(25, 0.97))
+    bounce = slide[-1] * np.cumprod([1.04, 1.03, 1.02, 1.01, 1.0, 1.0, 1.0, 1.0])
+    closes = np.r_[calm, slide, bounce, bounce[-1] * np.cumprod(np.full(40, 1.02))]
+    days = pd.bdate_range("2024-01-02", periods=len(closes)).strftime("%Y-%m-%d")
+    prev = np.r_[closes[0], closes[:-1]]
+    amount = np.r_[np.full(105, 1e8), np.full(8, 2e8), np.full(40, 1e8)]
+    bars = [{"time": d, "open": float(p), "high": float(max(p, c) * 1.005), "low": float(min(p, c) * 0.995),
+             "close": float(c), "volume": 1e5, "amount": float(a), "pct_chg": float((c / p - 1) * 100)}
+            for d, p, c, a in zip(days, prev, closes, amount, strict=True)]
+    monkeypatch.setattr(market, "history", lambda code, end=None: {"bars": bars})
+    monkeypatch.setattr(breadth, "_key", lambda: ("k",))
+    # The market's MCL rising every day: each 反 is purple, so the first is bought.
+    monkeypatch.setattr(breadth, "_table", lambda key: pd.DataFrame({"mcl_osc": np.arange(len(days), dtype=float)},
+                                                                     index=list(days)))
+    # A sell signal three days after the buy, before the +25% target: the trade is sold by 卖.
+    from tradingagents.dataflows import rebound_signal as rs
+    real = rs._sell_condition
+    first = rs.signals(pd.DataFrame(bars).rename(columns={"time": "date"})).iloc[0]["date"]
+    on = list(days)[list(days).index(first) + 3]
+    monkeypatch.setattr(rs, "_sell_condition", lambda x: real(x) | (x["date"] == on))
+    d = market_context.rebound_data("600519")
+    trade = d["signals"][0]["trade"]
+    assert trade["exit"] == "卖" and trade["sell_date"] == on and trade["peak_ret"] is not None
+    closing = [s for s in d["sells"] if s["closes"]]
+    assert [s["date"] for s in closing] == [trade["sell_date"]]
+    assert all(not s["closes"] for s in d["sells"] if s["date"] != trade["sell_date"])
+
+
+def test_rebound_buys_one_position_at_a_time_on_purple_only(monkeypatch):
+    import pandas as pd
+
+    from tradingagents.dataflows import market_context, rebound_signal as rs
+    from web.server import breadth, market
+
+    days = sorted({f"2026-0{m}-{d:02d}" for m in range(1, 7) for d in (5, 20)}
+                  | set(pd.bdate_range("2025-09-01", periods=60).strftime("%Y-%m-%d")))
+    bars = [{"time": d, "open": 10.0, "high": 10.0, "low": 10.0, "close": 10.0, "volume": 1.0, "amount": 1.0,
+             "pct_chg": 0.0} for d in days]
+    monkeypatch.setattr(market, "history", lambda code, end=None: {"bars": bars})
+    monkeypatch.setattr(breadth, "_key", lambda: ("k",))
+    monkeypatch.setattr(breadth, "_table", lambda key: pd.DataFrame({"mcl_osc": []}))
+    sig = pd.DataFrame({"date": ["2026-01-05", "2026-01-20", "2026-03-05", "2026-04-05"],
+                        "market_ok": pd.Series([True, True, False, True], dtype=object)})
+    for c in ("trigger", "oversold"):
+        sig[c] = "x"
+    for c in ("adx", "mdi", "pdi", "amt_ratio", "close", "stop"):
+        sig[c] = 1.0
+    trades = pd.DataFrame({
+        "date": sig["date"], "entry_date": ["2026-01-20", "2026-02-05", "2026-03-20", "2026-04-20"],
+        "exit_date": ["2026-03-20", "2026-03-20", "2026-03-20", None],
+        "sell_date": ["2026-03-05", "2026-03-05", "2026-03-05", None],
+        "exit": ["卖", "卖", "卖", "持有中"], "ret": [5.0, 3.0, 1.0, -2.0], "days": [40, 30, 0, 30],
+        "peak_date": [None] * 4, "peak_ret": [None] * 4})
+    monkeypatch.setattr(rs, "signals", lambda b, m=None: sig)
+    monkeypatch.setattr(rs, "exits", lambda b, s, *rule: trades)
+    monkeypatch.setattr(rs, "sell_signals", lambda b, m=None, include=None: pd.DataFrame(
+        {"date": ["2026-03-05", "2026-05-05"], "reason": "r", "gain20": 31.0, "adx": 30.0, "close": 10.0,
+         "market_weak": pd.Series([None, None], dtype=object)}))
+    d = market_context.rebound_data("600519")
+    got = {s["date"]: (s["trade"] is not None, s["skip"]) for s in d["signals"]}
+    assert got["2026-01-05"] == (True, None)                         # bought
+    assert got["2026-01-20"] == (False, "持仓中，不重复买入")          # purple, but the first is still held
+    assert got["2026-03-05"] == (False, "市场条件不满足，不买")        # grey
+    assert got["2026-04-05"] == (True, None)                         # sold on 03-20: free again
+    assert [s["date"] for s in d["sells"] if s["closes"]] == ["2026-03-05"]   # the one sale; 05-05 is 避
+
+
+def test_rebound_data_carries_the_best_per_trade_rule_with_its_own_book(monkeypatch):
+    import numpy as np
+    import pandas as pd
+
+    from tradingagents.dataflows import market_context, rebound_signal as rs
+    from web.server import breadth, market
+
+    calm = 100 + np.sin(np.arange(80) / 3)
+    slide = calm[-1] * np.cumprod(np.full(25, 0.97))
+    bounce = slide[-1] * np.cumprod([1.04, 1.03, 1.02, 1.01, 1.0, 1.0, 1.0, 1.0])
+    closes = np.r_[calm, slide, bounce, bounce[-1] * np.cumprod(np.full(40, 1.01))]   # +1% a day: +25% in ~23 days
+    days = pd.bdate_range("2024-01-02", periods=len(closes)).strftime("%Y-%m-%d")
+    prev = np.r_[closes[0], closes[:-1]]
+    amount = np.r_[np.full(105, 1e8), np.full(8, 2e8), np.full(40, 1e8)]
+    bars = [{"time": d, "open": float(p), "high": float(max(p, c) * 1.005), "low": float(min(p, c) * 0.995),
+             "close": float(c), "volume": 1e5, "amount": float(a), "pct_chg": float((c / p - 1) * 100)}
+            for d, p, c, a in zip(days, prev, closes, amount, strict=True)]
+    monkeypatch.setattr(market, "history", lambda code, end=None: {"bars": bars})
+    monkeypatch.setattr(breadth, "_key", lambda: ("k",))
+    monkeypatch.setattr(breadth, "_table", lambda key: pd.DataFrame({"mcl_osc": np.arange(len(days), dtype=float)},
+                                                                     index=list(days)))
+    monkeypatch.setattr(rs, "_sell_condition", lambda x: pd.Series(False, index=x.index))
+    d = market_context.rebound_data("600519")
+    short = d["signals"][0]["trade"]
+    best = d["best"]["trades"][0]
+    assert best["date"] == d["signals"][0]["date"] and best["entry_date"] == short["entry_date"]
+    assert short["exit"] == "期" and short["days"] == rs.MAX_DAYS            # the short rule: sold after 20 days
+    assert best["exit"] == "盈" and best["ret"] == pytest.approx(rs.BEST_TAKE_PROFIT * 100, abs=0.05)  # held to +25%
+    assert "单笔最优" in d["best"]["rule"]
+
+
+def test_intraday_keeps_the_last_days_and_measures_against_the_close_before(env):
+    import pandas as pd
+
+    from web.server import intraday
+
+    rows = []
+    for d, base in (("2026-11-12", 10.0), ("2026-11-13", 11.0), ("2026-11-16", 12.0)):
+        for i, hm in enumerate(("09:31:00", "09:32:00", "15:00:00")):
+            rows.append({"day": f"{d} {hm}", "open": base, "high": base + 0.2, "low": base - 0.2,
+                         "close": base + i * 0.1, "volume": 100.0 * (i + 1), "amount": (base + i * 0.1) * 100 * (i + 1)})
+    fetch = lambda sym: pd.DataFrame(rows)      # noqa: E731
+    out = intraday.intraday("600519", 2, fetch=fetch)
+    assert [d["date"] for d in out["days"]] == ["2026-11-13", "2026-11-16"]     # the last two days
+    assert out["prev_close"] == 10.2                                           # 11-12's last close
+    first = out["days"][0]["points"]
+    assert first[0]["time"] == "09:31" and first[0]["price"] == 11.0
+    assert first[1]["avg"] == round((11.0 * 100 + 11.1 * 200) / 300, 3)         # running amount ÷ volume
+    client = env[0]
+    assert client.get("/api/stock/NVDA/intraday").status_code == 404
+
+
+def test_flow_history_grows_on_disk_and_survives_a_failed_fetch(tmp_path):
+    import pandas as pd
+
+    from tradingagents.dataflows.vendors.akshare import settings as ak_settings
+    from web.server import flow
+
+    ak_settings.set_data_dir(tmp_path / ".akshare_data")
+    try:
+        first = lambda c: pd.DataFrame({"date": ["2026-05-28", "2026-05-29"], "main": [1e8, -2e8]})   # noqa: E731
+        later = lambda c: pd.DataFrame({"date": ["2026-05-29", "2026-06-01"], "main": [-3e8, 4e8]})   # noqa: E731
+        assert flow.history("688256", fetch=first)["days"] == {"2026-05-28": 1e8, "2026-05-29": -2e8}
+        d = flow.history("688256", fetch=later)          # merged: the older day kept, a day re-sent updated
+        assert d["days"] == {"2026-05-28": 1e8, "2026-05-29": -3e8, "2026-06-01": 4e8} and d["since"] == "2026-05-28"
+
+        def down(c):
+            raise ConnectionError("rate limited")
+        d = flow.history("688256", fetch=down)           # Eastmoney down: what is kept still serves
+        assert len(d["days"]) == 3 and "暂不可用" in d["note"]
+    finally:
+        ak_settings.set_data_dir(None)
+
+
+def test_the_days_main_flow_is_kept_in_its_snapshot_and_read_back(mkt):
+    import pandas as pd
+
+    market, fake, data = mkt
+    fake.stock_individual_fund_flow_rank = lambda indicator: pd.DataFrame(
+        {"代码": ["300308", "600519"], "今日主力净流入-净额": [-1.2e9, 3.4e8]})
+    market.market_table()                                      # 2026-11-13, closed: the flow is final
+    kept = pd.read_parquet(data / "snapshots" / "20261113" / "cross_section.parquet")
+    assert list(kept.columns)[-2:] == ["main_flow", "main_flow_src"]
+    assert kept.set_index("code").loc["600519", "main_flow"] == 3.4e8
+    # The sources gone (cache cleared, Eastmoney and 同花顺 down): the table reads the day's kept flow.
+    for f in (data / "sentiment").rglob("*.pkl"):
+        f.unlink()
+    fake.stock_individual_fund_flow_rank = _boom
+    fake.stock_fund_flow_individual = _boom
+    market._TABLES.clear()
+    market._read_xs.cache_clear()
+    table = market.market_table()
+    row = {r["code"]: r for r in table["rows"]}
+    assert row["600519"]["main_flow"] == 3.4e8 and table["flow"]["source"] == "eastmoney"
+    assert "本地快照" in table["flow"]["note"]
+
+
+def test_ticks_fall_back_to_sina_keep_a_closed_day_and_the_auction_comes_from_them(tmp_path, monkeypatch):
+    import pandas as pd
+
+    from tradingagents.dataflows.vendors.akshare import settings as ak_settings, store
+    from web.server import intraday
+
+    ak_settings.set_data_dir(tmp_path / ".akshare_data")
+    monkeypatch.setattr(store, "now_cst", lambda: pd.Timestamp("2026-11-21 10:00", tz="Asia/Shanghai"))
+    monkeypatch.setattr(store, "is_intraday", lambda now=None: False)
+    try:
+        def em_down(code):
+            raise RuntimeError("rate limited")
+        sina = lambda code, day: pd.DataFrame({"time": ["09:25:00", "09:30:00", "14:57:00", "15:00:00"],  # noqa: E731
+                                               "price": [230.0, 230.84, 228.5, 227.78],
+                                               "volume": [556900.0, 60000.0, 1900.0, 627137.0],
+                                               "side": ["卖", "买", "卖", "卖"]})
+        t = intraday.ticks("300750", "2026-11-20", em=em_down, sina=sina)
+        assert t["source"] == "新浪 3 秒分笔快照" and t["count"] == 4
+        assert t["auction"] == {"time": "09:25:00", "price": 230.0, "volume": 556900.0}
+        # The 09:25 and 15:00 call auctions have no active side: 竞价, neither bought nor sold.
+        assert t["buy_volume"] == 60000.0 and t["sell_volume"] == 1900.0
+        assert [r["side"] for r in t["rows"]] == ["竞价", "买", "卖", "竞价"]
+        assert t["auction_count"] == 2 and t["auction_volume"] == 556900.0 + 627137.0
+        # A closed day is kept on disk: no source asked the second time.
+        def never(*a):
+            raise AssertionError("asked again")
+        assert intraday.ticks("300750", "2026-11-20", em=never, sina=never)["source"] == "新浪 3 秒分笔快照（本地缓存）"
+        # The auction without Eastmoney's pre-market minutes: the 09:25 match from the trades.
+        monkeypatch.setattr(intraday, "intraday", lambda code, days=5, fetch=None: {"days": [{"date": "2026-11-20"}]})
+        a = intraday.auction("300750", em=em_down)
+        assert a["points"] == [] and a["match"]["price"] == 230.0 and "新浪逐笔" in a["source"]
+    finally:
+        ak_settings.set_data_dir(None)
+
+
+def test_a_finished_days_auction_minutes_are_kept_and_served_without_eastmoney(tmp_path, monkeypatch):
+    import pandas as pd
+
+    from tradingagents.dataflows.vendors.akshare import settings as ak_settings, store
+    from web.server import intraday
+
+    ak_settings.set_data_dir(tmp_path / ".akshare_data")
+    monkeypatch.setattr(store, "now_cst", lambda: pd.Timestamp("2026-11-20 10:00", tz="Asia/Shanghai"))
+    monkeypatch.setattr(intraday, "intraday", lambda code, days=5, fetch=None: {"days": [{"date": "2026-11-20"}]})
+    try:
+        # The real 09:25 match from the trade list replaces Eastmoney's last indicative price.
+        monkeypatch.setattr(intraday, "ticks", lambda c, day=None, **k: {"auction": {"time": "09:25:00", "price": 232.0,
+                                                                                    "volume": 556900.0}})
+        minutes = [f"2026-11-20 09:{m:02d}:00" for m in range(15, 26)]
+        em = lambda code: pd.DataFrame({"时间": minutes, "最新价": [231 + i * 0.1 for i in range(11)],  # noqa: E731
+                                        "成交量": [10 * (i + 1) for i in range(11)]})
+        a = intraday.auction("300750", em=em)
+        assert len(a["points"]) == 11 and a["points"][0]["time"] == "09:15" and a["match"]["time"] == "09:25"
+        assert a["points"][0]["volume"] == 1000                          # 手 → 股
+        assert a["points"][-1] == {"time": "09:25", "price": 232.0, "volume": 556900.0}       # the real match
+        assert a["match"]["price"] == 232.0
+
+        def never(code):
+            raise AssertionError("Eastmoney asked again")
+        kept = intraday.auction("300750", em=never)
+        assert kept["points"] == a["points"] and "本地保存" in kept["source"]
+    finally:
+        ak_settings.set_data_dir(None)

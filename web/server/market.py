@@ -14,6 +14,7 @@ into the analysis box to a code.
 """
 from __future__ import annotations
 
+import logging
 import re
 import threading
 from functools import lru_cache
@@ -25,6 +26,8 @@ import pandas as pd
 from tradingagents.dataflows.symbols import a_share_code, normalize_symbol
 from tradingagents.dataflows.vendors.akshare import settings as ak_settings, store
 from web.server import limit_detail
+
+log = logging.getLogger(__name__)
 
 XS_FILE = "cross_section.parquet"
 _LOCK = threading.Lock()
@@ -177,6 +180,32 @@ def main_flow(date: str) -> tuple[pd.Series | None, dict]:
                       "note": f"{why}，改用同花顺口径：按主动买卖方向统计全部成交，不分主力，不能与主力净流入比较"}
     reason = "只有最新交易日能取到" if not latest else (f"东方财富 {em_error}，同花顺也不可用" if em_error else "数据源不可用")
     return None, {"source": None, "label": "主力净流入", "note": f"{date} 的资金流不可得：{reason}"}
+
+
+_FLOW_LABEL = {"eastmoney": ("主力净流入", "东方财富 今日主力净流入"),
+               "ths": ("资金净流入(同花顺)", "同花顺口径：按主动买卖方向统计全部成交，不分主力，不能与主力净流入比较")}
+
+
+def _flow_kept(day: str, xs: pd.DataFrame, flow: pd.Series | None, meta: dict) -> tuple[pd.Series | None, dict]:
+    """The day's flow kept in its snapshot (snapshots' main_flow, appended after the session):
+    read when the sources no longer serve the day; written once the session's flow is final."""
+    from tradingagents.dataflows.vendors.akshare import snapshots
+    kept = "main_flow" in xs.columns and xs["main_flow"].notna().any()
+    if flow is None and kept:
+        src = xs["main_flow_src"].dropna().iloc[0] if "main_flow_src" in xs.columns and xs["main_flow_src"].notna().any() else "eastmoney"
+        label, note = _FLOW_LABEL.get(src, _FLOW_LABEL["eastmoney"])
+        series = pd.Series(pd.to_numeric(xs["main_flow"], errors="coerce").to_numpy(), index=xs["code"].astype(str).str.zfill(6))
+        return _unique(series), {"source": src, "label": label, "note": f"{note}（本地快照中保存的 {day} 数据）"}
+    final = pd.Timestamp(day).date() <= store.last_closed_trade_date() and not (
+        pd.Timestamp(day).date() == store.now_cst().date() and store.is_intraday())
+    if flow is not None and not kept and final and meta.get("source") in _FLOW_LABEL:
+        try:
+            if snapshots.attach_daily_extra(day, pd.DataFrame({"code": flow.index, "main_flow": flow.to_numpy(),
+                                                                "main_flow_src": meta["source"]})):
+                _read_xs.cache_clear()
+        except Exception as e:  # noqa: BLE001 - keeping it is a side task: the table still has the flow
+            log.warning("main flow for %s not kept: %s", day, e)
+    return flow, meta
 
 
 # ---------------------------------------------------------------------------
@@ -694,6 +723,7 @@ def market_table(date: str | None = None) -> dict:
     industry, main-force flow, TTM earnings, market value and shares."""
     day, xs = cross_section(date)
     flow, flow_meta = main_flow(day)
+    flow, flow_meta = _flow_kept(day, xs, flow, flow_meta)
     ttm, ttm_label = ttm_profit(day)
     from web.server import sw3, sw_class
     if not sw_class.status()["ready"]:

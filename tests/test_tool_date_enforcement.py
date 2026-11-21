@@ -64,6 +64,7 @@ DATED_TOOLS = [
     tools.get_verified_market_snapshot,
     tools.get_market_breadth,
     tools.get_industry_context,
+    tools.get_rebound_signal,
 ]
 
 
@@ -79,6 +80,7 @@ INSTRUMENT_TOOLS = [
     tools.get_income_statement, tools.get_news, tools.get_insider_transactions,
     tools.get_market_breadth,
     tools.get_industry_context,
+    tools.get_rebound_signal,
 ]
 
 
@@ -250,3 +252,25 @@ def test_industry_context_is_clamped_to_the_run_date_and_only_for_a_shares():
     assert text == "industry" and report.call_args.args == ("688256.SS", TRADE_DATE)
     report, text = call("NVDA")
     assert not report.called and "China A-shares only" in text
+
+
+@pytest.mark.unit
+def test_rebound_signal_is_clamped_to_the_run_date_and_only_for_a_shares():
+    graph = StateGraph(_State)
+    graph.add_node("tools", ToolNode([tools.get_rebound_signal]))
+    graph.add_edge(START, "tools")
+    graph.add_edge("tools", END)
+    app = graph.compile()
+
+    def call(company):
+        with mock.patch.object(tools, "get_rebound_report", return_value="rebound") as report:
+            out = app.invoke({
+                "messages": [AIMessage("", tool_calls=[{"name": "get_rebound_signal",
+                                                        "args": {"curr_date": "2026-09-14"}, "id": "1"}])],
+                "trade_date": TRADE_DATE, "company_of_interest": company})
+        return report, out["messages"][-1].content
+
+    report, text = call("600519.SS")
+    assert text == "rebound" and report.call_args.args == ("600519.SS", TRADE_DATE)
+    report, text = call("NVDA")
+    assert not report.called and "A-shares only" in text

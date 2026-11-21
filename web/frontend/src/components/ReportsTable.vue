@@ -8,6 +8,7 @@ import IconField from 'primevue/iconfield'
 import InputIcon from 'primevue/inputicon'
 import Tag from 'primevue/tag'
 import { api, formatSize, ratingSeverity, type ReportMeta } from '../api'
+import DeleteReport from './DeleteReport.vue'
 
 // Saved reports: sortable, searchable, with downloads. ``ticker`` narrows it to one stock.
 const props = defineProps<{ ticker?: string; title?: string; rows?: number }>()
@@ -33,6 +34,11 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+// A deleted report leaves the list at once (no reload needed).
+function removed(id: string) {
+  reports.value = reports.value.filter((r) => r.id !== id)
 }
 
 onMounted(load)
@@ -99,6 +105,11 @@ defineExpose({ reload: load })
           <a v-if="data.has_html" :href="api.download(data.id, 'html')" download><Button label="HTML" size="small" text /></a>
           <a :href="api.download(data.id, 'zip')" download><Button label="ZIP" size="small" text /></a>
         </div>
+      </template>
+    </Column>
+    <Column header="" :exportable="false" style="width: 48px">
+      <template #body="{ data }">
+        <DeleteReport :report-id="data.id" :ticker="data.ticker" :date="data.analysis_date" @deleted="removed" />
       </template>
     </Column>
   </DataTable>

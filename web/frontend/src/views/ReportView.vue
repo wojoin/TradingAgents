@@ -12,8 +12,11 @@ import { api, AGENT_LABELS, ratingSeverity, type Report } from '../api'
 import KlineChart from '../components/KlineChart.vue'
 import MarkdownView from '../components/MarkdownView.vue'
 import DownloadButtons from '../components/DownloadButtons.vue'
+import DeleteReport from '../components/DeleteReport.vue'
+import { useRouter } from 'vue-router'
 
 const props = defineProps<{ id: string }>()
+const router = useRouter()
 const report = ref<Report | null>(null)
 const error = ref('')
 const tab = ref('')
@@ -60,6 +63,8 @@ watch(() => props.id, load, { immediate: true })
               <Button label="打开 HTML 报告" icon="pi pi-external-link" text />
             </a>
             <DownloadButtons :report-id="report.id" :has-html="report.has_html" />
+            <DeleteReport :report-id="report.id" :ticker="report.ticker" :date="report.analysis_date" label="删除"
+                          @deleted="router.push('/analysis')" />
           </div>
         </div>
         <div v-if="report.models" class="muted small">{{ report.models }}</div>

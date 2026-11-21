@@ -12,7 +12,10 @@ from langgraph.prebuilt import InjectedState
 from tradingagents.dataflows.date_window import as_of, as_of_window
 from tradingagents.dataflows.errors import NoMarketDataError, VendorUnavailableError
 from tradingagents.dataflows.market_breadth import get_market_breadth as get_breadth_report
-from tradingagents.dataflows.market_context import get_industry_context as get_industry_report
+from tradingagents.dataflows.market_context import (
+    get_industry_context as get_industry_report,
+    get_rebound_signal as get_rebound_report,
+)
 from tradingagents.dataflows.markets import build_verified_market_snapshot
 from tradingagents.dataflows.router import no_data_available, route_to_vendor, vendor_unavailable
 from tradingagents.dataflows.symbols import a_share_code
@@ -138,6 +141,28 @@ def get_industry_context(
         return get_industry_report(symbol, as_of(curr_date, trade_date))
     except Exception as exc:  # noqa: BLE001 - context data: an error must not end the run
         return f"Industry context is unavailable: {type(exc).__name__}: {str(exc)[:200]}"
+
+
+@tool
+def get_rebound_signal(
+    symbol: Annotated[str, InjectedState("company_of_interest")],
+    curr_date: Annotated[str, "the current trading date, YYYY-mm-dd"],
+    trade_date: Annotated[str, InjectedState("trade_date")] = "",
+) -> str:
+    """China A-share 超跌反转 (oversold rebound) signal: the one buy combination that held up in a
+    backtest over every A-share since 2021 (a strong downtrend, oversold, a MACD / KDJ golden cross
+    on higher turnover, with the market's breadth momentum turning up). Returns the rule, its
+    historical statistics, whether the setup is in place today, and the stock's recent signals with
+    their 2 × ATR stop levels and rule-based exits; and the backtested sell / avoid signal (a 20-day
+    gain over 30%, or a MACD golden cross in a strong uptrend with ADX rising), with its recent
+    occurrences. Statistical edges, not forecasts; for China A-shares only.
+    """
+    if not a_share_code(symbol):
+        return "The 超跌反转 signal is computed for China A-shares only."
+    try:
+        return get_rebound_report(symbol, as_of(curr_date, trade_date))
+    except Exception as exc:  # noqa: BLE001 - context data: an error must not end the run
+        return f"The 超跌反转 signal is unavailable: {type(exc).__name__}: {str(exc)[:200]}"
 
 
 @tool

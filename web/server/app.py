@@ -42,6 +42,7 @@
   GET  /api/reports                     saved reports, newest first
   GET  /api/reports/{id}                a report's sections
   GET  /api/reports/{id}/download       ?format=md|html|zip (&inline=1 to view the page)
+  DELETE /api/reports/{id}              delete a report (moved to reports/.trash/, recoverable)
   GET  /api/kline/{ticker}              daily bars: ?source=snapshot for an A-share's whole history from
                                         the local store, else the last ?days= adjusted bars up to ?end=
 
@@ -457,6 +458,13 @@ def create_app(manager: RunManager | None = None, reports_root: Path | None = No
             raise HTTPException(404, "no such report")
         return report
 
+    @app.delete("/api/reports/{report_id}")
+    def delete_report(report_id: str):
+        where = reports.delete_report(report_id, root)
+        if where is None:
+            raise HTTPException(404, "no such report")
+        return {"deleted": report_id, "trash": where}
+
     @app.get("/api/reports/{report_id}/download")
     def download(report_id: str, format: str = Query("md", pattern="^(md|html|zip)$"), inline: bool = False):
         d = reports.resolve(report_id, root)
@@ -472,6 +480,62 @@ def create_app(manager: RunManager | None = None, reports_root: Path | None = No
         media = "text/html; charset=utf-8" if format == "html" else "text/markdown; charset=utf-8"
         disposition = "inline" if inline else "attachment"
         return FileResponse(f, media_type=media, filename=f"{d.name}.{format}", content_disposition_type=disposition)
+
+    @app.get("/api/stock/{code}/flow")
+    def stock_flow(code: str):
+        """The stock's main-force net inflow by day (Eastmoney, about 120 days a fetch, kept and grown on disk)."""
+        from web.server import flow
+        try:
+            return flow.history(code)
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from e
+
+    @app.get("/api/stock/{code}/ticks")
+    def stock_ticks(code: str, date: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
+        """The day's trades one by one (成交明细), the 09:25 call-auction match included."""
+        from web.server import intraday
+        try:
+            return intraday.ticks(code, date)
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from e
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(502, str(e)[:200]) from e
+
+    @app.get("/api/stock/{code}/auction")
+    def stock_auction(code: str):
+        """The opening call auction (集合竞价, 09:15–09:25) of the latest day."""
+        from web.server import intraday
+        try:
+            return intraday.auction(code)
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from e
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(502, str(e)[:200]) from e
+
+    @app.get("/api/stock/{code}/intraday")
+    def stock_intraday(code: str, days: int = Query(5, ge=1, le=5)):
+        """The last ``days`` trading days minute by minute (五日分时), from Sina, kept a minute."""
+        from web.server import intraday
+        try:
+            return intraday.intraday(code, days)
+        except LookupError as e:
+            raise HTTPException(404, str(e)) from e
+        except Exception as e:  # noqa: BLE001 - the source is down or refuses
+            raise HTTPException(502, f"分时数据暂不可用：{type(e).__name__}: {str(e)[:160]}") from e
+
+    @app.get("/api/stock/{code}/rebound")
+    def stock_rebound(code: str, end: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
+        """The stock's 超跌反转 signals since listing (for the K-line markers), today's setup and
+        the market condition."""
+        from tradingagents.dataflows.market_context import rebound_data
+        from tradingagents.dataflows.symbols import a_share_code
+        c = a_share_code(code)
+        if not c:
+            raise HTTPException(404, "only China A-shares")
+        try:
+            return rebound_data(c, end)
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
 
     @app.get("/api/kline/{ticker}")
     def kline(ticker: str, end: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
@@ -500,8 +564,21 @@ def create_app(manager: RunManager | None = None, reports_root: Path | None = No
         except VendorError as e:
             raise HTTPException(502, str(e)) from e
         df = df.tail(days)
+        # An A-share's amount and turnover (成交额 / 换手率 panes): the same cached bars, by date.
+        extra: dict = {}
+        if a_share_code(ticker):
+            try:
+                from tradingagents.dataflows.vendors.akshare.prices import history
+                h = history(normalize_symbol(ticker), end or get_current_date())
+                for r in h.itertuples():
+                    amt, turn = getattr(r, "Amount", None), getattr(r, "Turnover", None)
+                    extra[f"{r.Date:%Y-%m-%d}"] = {"amount": float(amt) if amt == amt and amt is not None else None,
+                                                   "turnover": float(turn) if turn == turn and turn is not None else None}
+            except Exception:  # noqa: BLE001 - the candles stand without them
+                extra = {}
         bars = [{"time": f"{r.Date:%Y-%m-%d}", "open": float(r.Open), "high": float(r.High), "low": float(r.Low),
-                 "close": float(r.Close), "volume": int(r.Volume)} for r in df.itertuples()]
+                 "close": float(r.Close), "volume": int(r.Volume), **extra.get(f"{r.Date:%Y-%m-%d}", {})}
+                for r in df.itertuples()]
         return {"symbol": normalize_symbol(ticker), "name": None, "source": "vendor",
                 "adjust": "前复权" if a_share_code(ticker) else "复权", "volume_unit": "股",
                 "base_through": None, "after_base": 0, "bars": bars, "note": note}

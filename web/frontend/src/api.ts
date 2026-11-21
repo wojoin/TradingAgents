@@ -102,6 +102,55 @@ export interface Kline {
   note?: string | null
 }
 
+// 五日分时: the last trading days minute by minute (Sina, unadjusted).
+export interface IntradayPoint { time: string; price: number; avg: number | null; volume: number; amount: number }
+export interface Intraday {
+  symbol: string; prev_close: number | null; source: string; volume_unit: '股' | '手'
+  days: { date: string; close: number; points: IntradayPoint[] }[]
+}
+
+// 成交明细: the day's trades one by one (shares; side 买 / 卖 / 中性, the active side).
+export interface Tick { time: string; price: number; volume: number; side: string }
+export interface Ticks {
+  symbol: string; date: string; source: string; count: number; buy_volume: number; sell_volume: number
+  auction_volume?: number; auction_count?: number   // 09:25 and 15:00 call auctions: side 竞价, neither buy nor sell
+  auction: { time: string; price: number; volume: number } | null; rows: Tick[]
+}
+// 集合竞价 (09:15–09:25): its minutes when Eastmoney serves them, and the 09:25 match.
+export interface Auction {
+  symbol: string; date: string; source: string
+  points: { time: string; price: number; volume: number }[]
+  match: { time: string; price: number; volume: number } | null
+}
+
+// 超跌反转 (the backtested buy combination): each day it fired, and today's setup.
+export interface ReboundSignal {
+  date: string; trigger: string; oversold: string; adx: number | null; mdi: number | null; pdi: number | null
+  amt_ratio: number | null; close: number | null; stop: number | null
+  market_ok: boolean | null      // the market's MCL over its level 3 days before; null without data
+  // The trade: bought at the next open, sold at the open after the first 卖 signal (sell_date) after it.
+  trade: { entry_date: string | null; exit_date: string | null; sell_date: string | null
+           exit: '卖' | '盈' | '止' | '期' | '持有中' | '待买入'; ret: number | null; days: number | null
+           entry_price: number | null; exit_price: number | null; target_price: number | null; stop_price: number | null
+           peak_date: string | null; peak_ret: number | null } | null   // the highest close while held: hindsight
+  skip: string | null            // why this 反 bought nothing (grey, or a position already held); null when bought
+}
+export interface StockRebound {
+  signals: ReboundSignal[]
+  now: { date: string; downtrend: boolean; oversold: boolean; adx: number | null } | null
+  market: { date: string; mcl: number | null; mcl_3d_ago: number | null; ok: boolean } | null
+  market_since?: string | null
+  rule: string; stats: string; note?: string
+  // 卖出 / 规避: the 20-day gain over 30%, or a MACD golden cross in a strong uptrend with ADX rising.
+  sells?: { date: string; reason: string; gain20: number | null; adx: number | null; close: number | null
+            market_weak: boolean | null
+            closes: boolean }[]          // true: the 卖 that sells a held trade; else a 规避 (avoid) signal only
+  sell_rule?: string; sell_stats?: string
+  // 「★ 单笔最优」: the same purple 反 entries, its own one-at-a-time book, sold at +25% / −30% /
+  // 250 trading days / the next 卖, whichever first.
+  best?: { rule: string; stats: string; trades: (NonNullable<ReboundSignal['trade']> & { date: string })[] }
+}
+
 export interface FlowMeta {
   source: 'eastmoney' | 'ths' | null
   label: string
@@ -719,10 +768,21 @@ export const api = {
     }),
   runs: () => request<RunSummary[]>('/api/runs'),
   reports: () => request<ReportMeta[]>('/api/reports'),
+  deleteReport: (id: string) =>
+    request<{ deleted: string; trash: string }>(`/api/reports/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   market: (date?: string) => request<MarketTable>(`/api/market${date ? `?date=${date}` : ''}`),
   marketSw3: () => request<NonNullable<MarketTable['sw3']>>('/api/market/sw3'),
   swClass: () => request<SwClassStatus>('/api/market/sw-class'),
   importSwClass: (since: number) => request<SwClassImport>(`/api/market/sw-class/import?since=${since}`, { method: 'POST' }),
+  stockFlow: (code: string) =>
+    request<{ symbol: string; since: string | null; note: string | null; days: Record<string, number> }>(
+      `/api/stock/${encodeURIComponent(code)}/flow`),
+  stockTicks: (code: string) => request<Ticks>(`/api/stock/${encodeURIComponent(code)}/ticks`),
+  stockAuction: (code: string) => request<Auction>(`/api/stock/${encodeURIComponent(code)}/auction`),
+  stockIntraday: (code: string, days = 5) =>
+    request<Intraday>(`/api/stock/${encodeURIComponent(code)}/intraday?days=${days}`),
+  stockRebound: (code: string, end?: string) =>
+    request<StockRebound>(`/api/stock/${encodeURIComponent(code)}/rebound${end ? `?end=${end}` : ''}`),
   marketCalendar: () => request<MarketCalendar>('/api/market/calendar'),
   marketStats: (range: StatsRange, end?: string) =>
     request<MarketStats>(`/api/market/stats?range=${range}${end ? `&end=${end}` : ''}`),

@@ -54,6 +54,14 @@ COLUMNS = ["trade_date", "code", "exchange", "name", "open", "high", "low", "clo
            "amplitude", "pct_chg", "chg", "turnover", "pe_dynamic", "pb", "total_mv", "float_mv", "volume_ratio",
            "pct_chg_60d", "pct_chg_ytd", "source"]
 
+# Columns appended after COLUMNS, filled after the day's sync when known (the web app's 行情 page
+# reads the day's main-force flow once the session has closed): the original columns are never
+# touched, and readers that take COLUMNS (load_daily, load_stock) see the file as before.
+#   main_flow       the day's main-force net inflow in yuan (Eastmoney 主力净流入; 同花顺 净额 when
+#                   Eastmoney was unavailable, see main_flow_src)
+#   main_flow_src   "eastmoney" or "ths" (the two are measured differently)
+EXTRA_COLUMNS = ["main_flow", "main_flow_src"]
+
 SPOT_MAP = {"名称": "name", "今开": "open", "最高": "high", "最低": "low", "最新价": "close", "昨收": "pre_close",
             "成交量": "volume", "成交额": "amount", "振幅": "amplitude", "涨跌幅": "pct_chg", "涨跌额": "chg",
             "换手率": "turnover", "市盈率-动态": "pe_dynamic", "市净率": "pb", "总市值": "total_mv", "流通市值": "float_mv",
@@ -166,7 +174,14 @@ def _write_cross_section(dkey: str, xs: pd.DataFrame) -> Path:
     tmp_dir = base_dir() / f".{dkey}.tmp"
     shutil.rmtree(tmp_dir, ignore_errors=True)
     tmp_dir.mkdir(parents=True)
-    _write(xs.sort_values("code")[COLUMNS].reset_index(drop=True), tmp_dir / XS_FILE)
+    out = xs.sort_values("code")[COLUMNS].reset_index(drop=True)
+    # A day synced again keeps the columns appended to it since (the original ones are rewritten).
+    old = final / XS_FILE
+    if old.exists():
+        extra = _extra_of(old)
+        if extra is not None:
+            out = out.merge(extra, on="code", how="left")
+    _write(out, tmp_dir / XS_FILE)
     if final.exists():
         shutil.rmtree(final)
     os.replace(tmp_dir, final)
@@ -423,6 +438,57 @@ def merged_dir() -> Path:
     return base_dir() / MERGED_DIR
 
 
+def _extra_cols(path: Path) -> list[str]:
+    import pyarrow.parquet as pq
+    names = pq.read_schema(path).names
+    return [c for c in EXTRA_COLUMNS if c in names]
+
+
+def _extra_of(path: Path) -> pd.DataFrame | None:
+    """The appended columns of a day's file, by code (None when it has none)."""
+    cols = _extra_cols(path)
+    return pd.read_parquet(path, columns=["code", *cols]) if cols else None
+
+
+def attach_daily_extra(trade_date: str, values: pd.DataFrame) -> bool:
+    """Append EXTRA_COLUMNS to a day's cross_section.parquet: ``values`` has ``code`` and some of
+    EXTRA_COLUMNS. The original columns are written back unchanged, after them the extras. A day
+    that already has them filled is left alone. Returns whether the file was rewritten."""
+    path = base_dir() / pd.Timestamp(trade_date).strftime("%Y%m%d") / XS_FILE
+    if not path.exists():
+        return False
+    have = _extra_cols(path)
+    new = [c for c in EXTRA_COLUMNS if c in values.columns]
+    if not new or (set(new) <= set(have) and pd.read_parquet(path, columns=new)[new[0]].notna().any()):
+        return False
+    df = _read(path)
+    original = [c for c in df.columns if c not in EXTRA_COLUMNS]       # written back as they were, in order
+    df = df.drop(columns=[c for c in new if c in df.columns])
+    v = values[["code", *new]].copy()
+    v["code"] = v["code"].astype(str).str.zfill(6)
+    df = df.merge(v.drop_duplicates("code"), on="code", how="left")
+    _write(df[original + [c for c in EXTRA_COLUMNS if c in df.columns]], path)
+    return True
+
+
+def load_daily_extra(code: str) -> pd.DataFrame:
+    """One stock's appended columns (trade_date, EXTRA_COLUMNS) on the days that have them, from the
+    day files and the monthly merged files alike."""
+    code = str(code).zfill(6)
+    parts = []
+    for f, _days in _daily_sources():
+        cols = _extra_cols(f)
+        if not cols:
+            continue
+        d = _read(f, columns=["trade_date", "code", *cols], filters=[("code", "==", code)])
+        if len(d):
+            parts.append(d)
+    if not parts:
+        return pd.DataFrame(columns=["trade_date", *EXTRA_COLUMNS])
+    out = pd.concat(parts, ignore_index=True).drop(columns="code")
+    return out.sort_values("trade_date").drop_duplicates("trade_date", keep="last").reset_index(drop=True)
+
+
 def _month_days() -> dict[str, list[str]]:
     """base 之后的日期目录按月分组: {YYYYMM: [YYYYMMDD, ...]}。"""
     bt = base_through()
@@ -478,7 +544,9 @@ def ensure_merged() -> list[str]:
         out = df.copy()
         out["trade_date"] = out["trade_date"].dt.date
         tmp = f.with_suffix(".parquet.tmp")
-        out[COLUMNS].to_parquet(tmp, index=False, compression="zstd", row_group_size=ROW_GROUP)
+        # The appended columns ride along (a day without them gives nulls); readers still take COLUMNS.
+        out[COLUMNS + [c for c in EXTRA_COLUMNS if c in out.columns]].to_parquet(
+            tmp, index=False, compression="zstd", row_group_size=ROW_GROUP)
         os.replace(tmp, f)
         man[mon] = sig
         built.append(mon)

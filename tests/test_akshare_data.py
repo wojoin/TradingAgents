@@ -327,3 +327,47 @@ def test_symbol_cache_downloads_once_when_threads_ask_together(data):
     assert errors == [] and len(out) == 4 and len(calls) == 1
     folder = S.root() / "agent" / "ohlcv"
     assert (folder / "SH688256.pkl").exists() and not list(folder.glob("*.tmp"))
+
+
+def _xs_day(day: str, codes=("600519", "000001")) -> pd.DataFrame:
+    df = pd.DataFrame({c: [np.nan] * len(codes) for c in SN.COLUMNS})
+    df["trade_date"] = pd.Timestamp(day)
+    df["code"] = list(codes)
+    df["exchange"] = ["SH", "SZ"][:len(codes)]
+    df["name"] = ["贵州茅台", "平安银行"][:len(codes)]
+    df["close"] = [1400.0, 11.0][:len(codes)]
+    df["source"] = "spot"
+    return df
+
+
+def test_main_flow_is_appended_to_a_day_and_the_original_columns_stay(data):
+    day = "2026-10-15"
+    path = SN._write_cross_section("20261015", _xs_day(day))
+    before = pd.read_parquet(path)
+    assert SN.attach_daily_extra(day, pd.DataFrame({"code": ["600519", "000001"], "main_flow": [3.4e8, -1.2e8],
+                                                    "main_flow_src": "eastmoney"}))
+    after = pd.read_parquet(path)
+    assert list(after.columns) == SN.COLUMNS + SN.EXTRA_COLUMNS                     # appended at the end
+    pd.testing.assert_frame_equal(after[SN.COLUMNS], before)                        # the originals untouched
+    assert after.set_index("code").loc["600519", "main_flow"] == 3.4e8
+    # Already filled: left alone; the readers of the original data see only COLUMNS.
+    assert not SN.attach_daily_extra(day, pd.DataFrame({"code": ["600519"], "main_flow": [9.9]}))
+    assert list(SN.load_daily(day, day).columns) == SN.COLUMNS
+    # A day synced again keeps what was appended to it.
+    SN._write_cross_section("20261015", _xs_day(day))
+    assert pd.read_parquet(path).set_index("code").loc["000001", "main_flow"] == -1.2e8
+
+
+def test_main_flow_rides_into_the_monthly_merged_file_and_reads_back_by_stock(data):
+    for day in ("2026-09-29", "2026-09-30", "2026-10-09"):          # September is complete once October starts
+        SN._write_cross_section(pd.Timestamp(day).strftime("%Y%m%d"), _xs_day(day))
+    SN.attach_daily_extra("2026-09-30", pd.DataFrame({"code": ["600519", "000001"], "main_flow": [5e7, 6e7],
+                                                      "main_flow_src": "eastmoney"}))
+    SN.ensure_merged()
+    merged = pd.read_parquet(SN.merged_dir() / "202609.parquet")
+    assert "main_flow" in merged.columns and merged["main_flow"].notna().sum() == 2
+    SN._SRC_CACHE = None
+    got = SN.load_daily_extra("600519")
+    assert list(got["trade_date"].dt.strftime("%Y-%m-%d")) == ["2026-09-29", "2026-09-30"]
+    assert got.set_index(got["trade_date"].dt.strftime("%Y-%m-%d")).loc["2026-09-30", "main_flow"] == 5e7
+    assert list(SN.load_daily("2026-09-01", "2026-09-30").columns) == SN.COLUMNS

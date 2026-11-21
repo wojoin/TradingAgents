@@ -1,4 +1,4 @@
-"""Saved reports under ``results_dir/reports``: list, read, and package for download.
+"""Saved reports under ``results_dir/reports``: list, read, package for download, delete.
 
 A report is a directory the report writer made (``complete_report.md``, an HTML
 page, and one Markdown file per agent in numbered section folders). Its id is the
@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import re
+import shutil
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -92,3 +93,21 @@ def report_zip(report_id: str, root: Path | None = None) -> bytes | None:
             if p.is_file():
                 z.write(p, f"{d.name}/{p.relative_to(d).as_posix()}")
     return buf.getvalue()
+
+
+TRASH = ".trash"
+
+
+def delete_report(report_id: str, root: Path | None = None) -> str | None:
+    """Move the report into ``reports/.trash/`` (kept, so a mistake can be undone by moving it
+    back); returns where it went, or None when there is no such report."""
+    d = resolve(report_id, root)
+    if d is None:
+        return None
+    trash = d.parent / TRASH
+    trash.mkdir(exist_ok=True)
+    target = trash / d.name
+    if target.exists():                     # deleted once before under the same name
+        target = trash / f"{d.name}.{datetime.now():%Y%m%d-%H%M%S}"
+    shutil.move(str(d), str(target))
+    return str(target)

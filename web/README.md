@@ -245,6 +245,12 @@ that is down) is listed; run it again later for those. Log (Beijing time):
 | GET | `/api/market/concepts/{name}/stocks` | `?date=`: a concept's stocks |
 | GET | `/api/market/forecasts` | `?date=&period=`: a report period's 业绩预告 |
 | GET | `/api/market/breadth/verdict` | `?date=`: 市场广度综合研判 |
+| DELETE | `/api/reports/{id}` | delete a report (moved to `reports/.trash/`, recoverable) |
+| GET | `/api/stock/{code}/rebound` | 超跌反转 buy signals with their trades (盈 +30% / 止 −15% / 期 20 days / 卖), the ★ 单笔最优 trades (+25% / −30% / 250 days), sell / avoid signals |
+| GET | `/api/stock/{code}/flow` | main-force net inflow by day (Eastmoney's ~120 days, kept and grown in `web/flow/`, plus the snapshots' `main_flow`) |
+| GET | `/api/stock/{code}/intraday` | `?days=1..5`: minute bars (Sina, 1 minute), for 分时 and 五日 |
+| GET | `/api/stock/{code}/ticks` | the day's trades (3-second snapshots; Eastmoney, else Sina; a closed day kept in `web/ticks/`); the 09:25 / 15:00 call auctions marked 竞价 |
+| GET | `/api/stock/{code}/auction` | the opening call auction 09:15–09:25 (Eastmoney's pre-market minutes, kept in `web/auction/`), ending on the real 09:25 match |
 | GET | `/api/market/sw-class` | 申万行业分类文件 (`.akshare_data/manual/sw_class/`): data date, last checked / changed |
 | POST | `/api/market/sw-class/import` | `?since=`: copy the `StockClassifyUse_stock.xls` the browser saved to ~/Downloads, when it differs |
 | GET / POST | `/api/market/sw3` | 乐咕乐股's 三级 set (the fallback): its state / download it now |
