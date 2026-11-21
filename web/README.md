@@ -29,11 +29,17 @@ A browser front end for TradingAgents, with a left-hand menu:
   synced in the background when picked — the same as `tradingagents-ashare sync --only snapshots`,
   a couple of minutes when skipped days need each stock's bars — with progress shown): code, name, change, price, main-force net inflow, opening
   change, high, low, amount, volume, 5-day change (each session's change compounded, so
-  an ex-dividend day does not distort it), Shenwan industry, turnover %, P/E and EPS
+  an ex-dividend day does not distort it), Shenwan 一级 / 二级 / 三级 industry, turnover %, P/E and EPS
   (TTM), market value and shares, total and floating; sortable, searchable, filterable by
-  industry, exportable as CSV, with a star to add a stock to 自选. A list at the bottom
+  industry (three cascading lists), exportable as CSV, with a star to add a stock to 自选. A list at the bottom
   narrows it to 沪深A股, 沪市, 深市 or 京市 A股, 沪深300 (today's constituents, from China
   Securities Index) or ST stocks; the notes on the figures' sources sit beside it.
+  The industries come from 申万's own files kept in `.akshare_data/manual/sw_class/`
+  (`StockClassifyUse_stock.xls`, each stock's code, with `SwClassCode_2021.xls` for the names).
+  申万's site refuses programs, so the sync button beside the 三级 list opens the file in the
+  browser and the server copies it in from ~/Downloads, only when the classification changed
+  (what changed is kept in `meta.json`); about once a month. Where those files have no 三级,
+  乐咕乐股's copy (`web/sw3/`, built only while 申万's files are missing) fills in, marked 「乐」.
   Long-press a row (or right-click it) for groups, the note, the stock page and analysis. The flow is Eastmoney's 今日主力净流入 for the latest
   session; when Eastmoney is rate-limited it is 同花顺's net flow, labelled as such.
   Below the table, for the day shown: the spread of changes in bands (falls >10%, 10–7, 7–5,
@@ -59,7 +65,10 @@ A browser front end for TradingAgents, with a left-hand menu:
   three steps (腾落线 and MSI for the trend, MCL, the breadth thrust and ADR for a turn, TRIN and the
   index against 腾落线 to check the move), each state judged by how the 中证全指 did over the next 5
   and 20 days after the same state here (only days whose outcome was known by the day asked
-  about), and a short- and medium-term reading built from them, with what to watch for next;
+  about), and a short- and medium-term reading built from them; the day's market structure (涨家占比
+  / ADL × TRIN_额 / TRIN_量 × MCL: 普涨, 少数股抱团, 抱团瓦解, 无差别下跌 …, each with what followed it; the
+  readings day by day in a table, 1 to 60 days or six months, its 项目 column fixed when scrolled);
+  what to watch for next;
   below it, that reading on each day of a span (each day judged as it would have been then), what
   the 中证全指 then did, and how often a 偏多 / 偏空 reading was right. The
   中证全指 (`ts/csi_all`) is topped up from Eastmoney, else from 中证指数公司 (Sina's copy stopped in
@@ -104,6 +113,9 @@ A browser front end for TradingAgents, with a left-hand menu:
   oscillator (ratio-adjusted) and the summation index MSI (as 19 × EMA39 − 9 × EMA19, the sum from the
   start of time, so its zero line does not depend on the first day kept; with its zero crossings), Zweig's breadth thrust (with its signals), the
   advance-decline ratio and absolute breadth index, the share above the 250-day MA,
+  涨家 / 涨额 / 涨量占比 with 额价差 and 量价差 (the rising stocks' share of the money less their share
+  of the stocks, TRIN's linear cousin), 净新高 as a % of the stocks traded, MCL also on the raw
+  count (the classic definition), 放量 / 缩量 against the 5 and 20 days before,
   概念板块热度 (同花顺's concept boards over 1, 5 or 10 days, latest day only; a row opens on the
   board's stocks, from Eastmoney's board of the same name (Sina's when Eastmoney fails or has none), kept in `.akshare_data/web/concepts/` and
   re-checked after 30 days, with what was added and removed; `python -m web.server.daily` re-checks
@@ -225,6 +237,10 @@ that is down) is listed; run it again later for those. Log (Beijing time):
 | GET | `/api/market/concepts/{name}/stocks` | `?date=`: a concept's stocks |
 | GET | `/api/market/forecasts` | `?date=&period=`: a report period's 业绩预告 |
 | GET | `/api/market/breadth/verdict` | `?date=`: 市场广度综合研判 |
+| GET | `/api/market/sw-class` | 申万行业分类文件 (`.akshare_data/manual/sw_class/`): data date, last checked / changed |
+| POST | `/api/market/sw-class/import` | `?since=`: copy the `StockClassifyUse_stock.xls` the browser saved to ~/Downloads, when it differs |
+| GET / POST | `/api/market/sw3` | 乐咕乐股's 三级 set (the fallback): its state / download it now |
+| GET | `/api/market/breadth/structure` | `?range=1d\|10d\|30d\|60d\|6m&end=`: 当日市场结构 day by day |
 | GET | `/api/market/breadth/verdict/history` | `?range=&end=`: that reading day by day, and its hit rate |
 | GET | `/api/market/breadth` | `?range=&end=`: 涨停溢价 and 晋级率, size styles, new highs and lows, share above MAs |
 | GET | `/api/market/limits` | `?date=`: limit-ups by days in a row (with shape, reason, sealing times, orders), 炸板 and limit-downs |

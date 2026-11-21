@@ -76,8 +76,45 @@ def _latest(pattern: str) -> pd.DataFrame | None:
     return pd.read_pickle(files[-1]) if files else None
 
 
-@lru_cache(maxsize=1)
 def industries() -> pd.DataFrame:
+    """code -> sw1, sw2, sw3 (申万 names) and sw3_src: from 申万's own files when they are kept
+    (``sw_class``); else 一级 / 二级 from the store's constituent tables and 三级 from
+    乐咕乐股's copy (``sw3``), sw3_src "lg"."""
+    from web.server import sw3, sw_class
+    lg = sw3.members()
+    return _industries(sw_class._mtimes(), _cache_key_of(lg))
+
+
+def _cache_key_of(df: pd.DataFrame) -> tuple:
+    return (len(df), id(df))
+
+
+@lru_cache(maxsize=2)
+def _industries(files_key: tuple, lg_key: tuple) -> pd.DataFrame:
+    from web.server import sw3, sw_class
+    api, files, lg = _api_industries(), sw_class.classes(), sw3.members()
+    df = files[["sw1", "sw2"]].combine_first(api) if len(files) else api.copy()
+    df = df.reindex(df.index.union(files.index).union(lg.index))
+    level3 = files["sw3"].dropna() if len(files) else pd.Series(dtype=object)
+    df["sw3"] = level3.reindex(df.index)
+    df["sw3_src"] = pd.Series("file", index=level3.index).reindex(df.index)
+    gap = df["sw3"].isna() & df.index.isin(lg.index)
+    df.loc[gap, "sw3"] = lg["sw3"].reindex(df.index[gap]).values
+    df.loc[gap, "sw3_src"] = "lg"
+    df.index.name = "code"
+    return df
+
+
+def _clear_industries() -> None:
+    _api_industries.cache_clear()
+    _industries.cache_clear()
+
+
+industries.cache_clear = _clear_industries  # type: ignore[attr-defined]
+
+
+@lru_cache(maxsize=1)
+def _api_industries() -> pd.DataFrame:
     """code -> sw1, sw2 (Shenwan names), from the store's latest constituent tables."""
     def level(members: str, names: str, code_col: str, label: str) -> pd.DataFrame:
         cons, table = _latest(members), _latest(names)
@@ -521,11 +558,20 @@ def market_stats(end: str | None = None, rng: str = "60d") -> dict:
     end = days[-1]
     start = _range_start(end, rng, days)
     span = [d for d in days if d >= start]
-    stats, _ = _span_stats(span)
+    # 20 trading days before the span too, to judge each day's amount against the days before it.
+    first = days.index(span[0])
+    stats, _ = _span_stats(days[max(0, first - 20):days.index(end) + 1])
+    stats = stats[stats["total"] > 0].reset_index(drop=True)
+    amount = stats["amount"].astype(float)
+    r5 = amount / amount.shift(1).rolling(5, min_periods=5).mean()
+    r20 = amount / amount.shift(1).rolling(20, min_periods=20).mean()
+    stats = stats.assign(r5=r5, r20=r20)
+    stats = stats[stats["date"] >= span[0]]
     rows = [{"date": r.date, "up": int(r.up), "down": int(r.down), "flat": int(r.flat), "total": int(r.total),
              "amount": float(r.amount), "median": _trim(_num(r.median)), "limit_up": int(r.limit_up),
-             "limit_down": int(r.limit_down), "broken": int(r.broken)}
-            for r in stats.itertuples(index=False) if r.total]
+             "limit_down": int(r.limit_down), "broken": int(r.broken),
+             "amount_r5": _trim(_num(r.r5)), "amount_r20": _trim(_num(r.r20))}
+            for r in stats.itertuples(index=False)]
     # The index closes from the trading day before the span, so each line starts at 0%.
     prev = days[days.index(span[0]) - 1] if days.index(span[0]) else span[0]
     indexes, index_error = {}, None
@@ -649,11 +695,15 @@ def market_table(date: str | None = None) -> dict:
     day, xs = cross_section(date)
     flow, flow_meta = main_flow(day)
     ttm, ttm_label = ttm_profit(day)
-    cache_key = (day, str(flow_meta.get("source")), ttm_label)
+    from web.server import sw3, sw_class
+    if not sw_class.status()["ready"]:
+        sw3.ensure()                   # 乐咕乐股's 三级 only while 申万's files are missing
+    sectors = industries()
+    cache_key = (day, str(flow_meta.get("source")), ttm_label, sw_class._mtimes(), len(sectors))
     with _LOCK:
         if cache_key in _TABLES:
-            return _TABLES[cache_key]
-    df = xs.copy().join(industries(), on="code")
+            return {**_TABLES[cache_key], "sw3": sw3.status(), "sw_class": sw_class.status()}
+    df = xs.copy().join(sectors, on="code")
     df["main_flow"] = df["code"].map(flow) if flow is not None else None
     if "pct_5d" not in df:                       # a historical day carries it already
         five = pct_5d(day)
@@ -680,7 +730,9 @@ def market_table(date: str | None = None) -> dict:
             "amount": _num(r.amount), "volume": _num(r.volume), "pct_5d": _num(r.pct_5d),
             "amplitude": _num(getattr(r, "amplitude", None)),
             "industry": r.sw1 if isinstance(r.sw1, str) else None,
-            "sub_industry": r.sw2 if isinstance(r.sw2, str) else None, "turnover": _num(r.turnover),
+            "sub_industry": r.sw2 if isinstance(r.sw2, str) else None,
+            "industry3": r.sw3 if isinstance(r.sw3, str) else None,
+            **({"industry3_src": "lg"} if r.sw3_src == "lg" else {}), "turnover": _num(r.turnover),
             "pe_ttm": close / eps if eps and close else None, "eps_ttm": eps,
             "total_mv": total_mv, "total_shares": shares,
             "float_mv": float_mv, "float_shares": float_mv / close if float_mv and close else None,
@@ -696,7 +748,7 @@ def market_table(date: str | None = None) -> dict:
              "count": len(rows), "rows": rows}
     with _LOCK:
         _TABLES[cache_key] = table
-    return table
+    return {**table, "sw3": sw3.status(), "sw_class": sw_class.status()}
 
 
 def _names() -> pd.DataFrame:

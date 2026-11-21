@@ -1,13 +1,15 @@
 """申万行业数据 (申万宏源研究): 一级 / 二级行业列表、行业日度估值、成分股。
 
-    sw_first        申万一级行业列表 (31 个)                     每周一次
-    sw_second       申万二级行业列表 (约 124 个, 带"上级行业")     每周一次
+    sw_first        申万一级行业列表 (31 个)                     每月一次
+    sw_second       申万二级行业列表 (约 124 个, 带"上级行业")     每月一次
     sw_daily        申万一级行业日度估值 (首次回补 5 年)           增量 ts/sw_daily.parquet
     sw_daily2       申万二级行业日度估值 (首次回补 3 年)           增量 ts/sw_daily2.parquet
-    sw_comp         一级行业成分股 (个股 -> 一级行业)              每周一次
-    sw_second_cons  二级行业成分股 (个股 -> 二级行业)              每周一次
+    sw_comp         一级行业成分股 (个股 -> 一级行业)              每月一次
+    sw_second_cons  二级行业成分股 (个股 -> 二级行业)              每月一次
 
-申万宏源无三级行业接口, 只覆盖一级 / 二级。
+申万宏源无三级行业接口, 这里只覆盖一级 / 二级。web 行情页的一 / 二 / 三级优先取申万官网的分类文件
+(web/server/sw_class.py, 浏览器下载后同步到本地), 缺失时三级退回乐咕乐股 (web/server/sw3.py)。
+行业分类与成分股变动很少, 每自然月取一次即可。
 """
 from __future__ import annotations
 
@@ -112,14 +114,14 @@ def fetch_industry(refresh: bool = False, years: int = L1_YEARS) -> dict[str, pd
         except Exception as e:
             log.warning("  ✗ %-14s %s", name, e)
 
-    get("sw_first", lambda: _sw_class("一级行业"), "weekly")
-    get("sw_second", _sw_second, "weekly")
+    get("sw_first", lambda: _sw_class("一级行业"), "monthly")
+    get("sw_second", _sw_second, "monthly")
     inc("sw_daily", "一级行业", f"{today.year - years}0101")
     inc("sw_daily2", "二级行业", f"{today.year - L2_YEARS}0101")
     if "sw_first" in raw:
         codes = _codes(raw["sw_first"])
-        get("sw_comp", lambda: _components(codes, "行业代码"), "weekly")
+        get("sw_comp", lambda: _components(codes, "行业代码"), "monthly")
     if "sw_second" in raw:
         codes2 = _codes(raw["sw_second"])
-        get("sw_second_cons", lambda: _components(codes2, "二级代码"), "weekly")
+        get("sw_second_cons", lambda: _components(codes2, "二级代码"), "monthly")
     return raw

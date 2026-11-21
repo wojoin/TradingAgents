@@ -15,6 +15,7 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import os
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -191,6 +192,8 @@ def _key(policy) -> tuple[str, bool]:
     if policy == "weekly":
         y, w, _ = d.isocalendar()
         return f"{y}W{w:02d}", False
+    if policy == "monthly":
+        return f"{d.year}M{d.month:02d}", False
     if isinstance(policy, tuple) and policy[0] == "period":
         return f"P{policy[1]}", bool(policy[2])
     raise ValueError(f"未知缓存策略 {policy}")
@@ -243,18 +246,34 @@ def symbol_cache(kind: str, symbol: str, fetch: Callable[[], pd.DataFrame], live
 
     live: 请求覆盖到今天; 盘中时缓存超过 QUOTE_TTL_SECONDS 就重新拉取。"""
     path = root() / "agent" / kind / f"{symbol}.pkl"
-    now = now_cst()
-    if path.exists():
-        written = dt.datetime.fromtimestamp(path.stat().st_mtime, CST)
-        expired = live and is_intraday(now) and (now - written).total_seconds() > QUOTE_TTL_SECONDS
-        if written.date() == now.date() and not expired:
-            return pd.read_pickle(path)
-    df = fetch()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".pkl.tmp")
-    df.to_pickle(tmp)
-    os.replace(tmp, path)
-    return df
+    # 一次分析里几位分析师并行读同一只股票: 同一文件同一时刻只让一个线程下载, 其余等它写完直接读缓存
+    with _path_lock(path):
+        now = now_cst()
+        if path.exists():
+            written = dt.datetime.fromtimestamp(path.stat().st_mtime, CST)
+            expired = live and is_intraday(now) and (now - written).total_seconds() > QUOTE_TTL_SECONDS
+            if written.date() == now.date() and not expired:
+                return pd.read_pickle(path)
+        df = fetch()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _tmp_of(path)
+        df.to_pickle(tmp)
+        os.replace(tmp, path)
+        return df
+
+
+_PATH_LOCKS: dict[str, threading.Lock] = {}
+_PATH_LOCKS_GUARD = threading.Lock()
+
+
+def _path_lock(path: Path) -> threading.Lock:
+    with _PATH_LOCKS_GUARD:
+        return _PATH_LOCKS.setdefault(str(path), threading.Lock())
+
+
+def _tmp_of(path: Path) -> Path:
+    """写入用的临时文件: 每个进程 / 线程各用各的名字, 并发写同一文件时不会互相把对方的临时文件改名走。"""
+    return path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
 
 
 def call(fn: Callable, what: str):
@@ -322,6 +341,6 @@ def _write_ts(out: pd.DataFrame, path: Path) -> None:
     for c in out.columns:                       # parquet 需要统一类型
         if out[c].dtype == object:
             out[c] = out[c].astype(str)
-    tmp = path.with_suffix(".parquet.tmp")
+    tmp = _tmp_of(path)
     out.to_parquet(tmp, index=False)
     os.replace(tmp, path)

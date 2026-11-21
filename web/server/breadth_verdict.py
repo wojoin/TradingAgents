@@ -6,6 +6,8 @@
             or the low zone) and ADR (its 10-day average's percentile): is a turn showing;
   ③ 验真伪  TRIN (its 10-day percentile) and 腾落线 against the index (中证全指) over 20 days: is the
             move real.
+  当日结构  the day's breadth (涨家占比 / ADL), money (TRIN_额 / TRIN_量) and MCL together: 普涨,
+            少数股抱团, 抱团瓦解, 无差别下跌 … (STRUCTURES), each with what followed it here.
 
 Every indicator's state is judged by what followed it here, not by a textbook threshold: the
 days in the past with the same state, and how the 中证全指 did over the next 5 and 20 trading
@@ -59,6 +61,51 @@ def index_closes(fetch=None) -> pd.Series:
         return _MEMO[day]
 
 
+# 当日市场结构: breadth by 涨家占比 (≥ 60% broad rise, ≤ 40% broad fall), the money by TRIN_额
+# (< 0.8 with the rising stocks, > 1.2 with the falling ones), a cluster breaking up by TRIN_额
+# climbing 0.2 or more off its lowest of the 3 days before into the balanced band on a broad
+# fall, MCL for momentum.
+BROAD_UP, BROAD_DOWN, TRIN_LOW, TRIN_HIGH, TRIN_RISE = 60.0, 40.0, 0.8, 1.2, 0.2
+STRUCTURES = (
+    ("broad_up_strong", "普涨（健康）", f"涨家占比 ≥ {BROAD_UP:.0f}%，TRIN_额 ≤ {TRIN_HIGH}，MCL > 0",
+     "多数股票上涨，资金没有流向下跌股，广度动能向上：上涨面广、有资金和动能支撑"),
+    ("broad_up_rebound", "普涨反弹", f"涨家占比 ≥ {BROAD_UP:.0f}%，TRIN_额 ≤ {TRIN_HIGH}，MCL ≤ 0",
+     "当天普涨，但广度动能仍向下：多为超跌后的反弹，需看能否持续"),
+    ("fake_up", "虚涨（资金在跌）", f"涨家占比 ≥ {BROAD_UP:.0f}%，TRIN_额 > {TRIN_HIGH}",
+     "上涨家数多，但成交集中在下跌股：涨的多是小票，资金在撤"),
+    ("cluster_hold", "少数股抱团", f"涨家占比 ≤ {BROAD_DOWN:.0f}%，TRIN_额 < {TRIN_LOW}",
+     "多数股票下跌，资金集中在少数上涨股：抱团行情，指数可能被少数权重撑住"),
+    ("cluster_break", "抱团瓦解", f"涨家占比 ≤ {BROAD_DOWN:.0f}%，TRIN_额 {TRIN_LOW}–{TRIN_HIGH} 且比前 3 日最低升 ≥ {TRIN_RISE}",
+     "抱团股也开始被卖，资金不再集中：正从抱团走向无差别下跌"),
+    ("broad_down", "无差别下跌", f"涨家占比 ≤ {BROAD_DOWN:.0f}%，TRIN_额 {TRIN_LOW}–{TRIN_HIGH}",
+     "多数股票下跌，资金也没有躲进上涨股：普跌，没有避风港"),
+    ("panic", "恐慌普跌", f"涨家占比 ≤ {BROAD_DOWN:.0f}%，TRIN_额 > {TRIN_HIGH}",
+     "普跌且成交集中在下跌股：恐慌性抛售，常出现在急跌末段"),
+    ("mixed_cluster", "分化·资金集中", f"涨家占比 {BROAD_DOWN:.0f}–{BROAD_UP:.0f}%，TRIN_额 < {TRIN_LOW}",
+     "涨跌家数相近，资金偏向上涨股：结构性行情"),
+    ("mixed", "分化·均衡", f"涨家占比 {BROAD_DOWN:.0f}–{BROAD_UP:.0f}%，TRIN_额 {TRIN_LOW}–{TRIN_HIGH}",
+     "涨跌和资金都相对均衡：方向不明的震荡"),
+    ("mixed_out", "分化·资金流出", f"涨家占比 {BROAD_DOWN:.0f}–{BROAD_UP:.0f}%，TRIN_额 > {TRIN_HIGH}",
+     "涨跌家数相近，资金偏向下跌股：资金在撤，偏弱的震荡"),
+)
+
+
+def structure_states(up_pct: pd.Series, trin: pd.Series, trin3: pd.Series, mcl: pd.Series) -> pd.Series:
+    """Each day's 当日市场结构 (a key of STRUCTURES; "" without the readings)."""
+    up, down = up_pct >= BROAD_UP, up_pct <= BROAD_DOWN
+    mid = ~up & ~down
+    low, high = trin < TRIN_LOW, trin > TRIN_HIGH
+    balanced = ~low & ~high
+    rising = trin3 >= TRIN_RISE
+    ok = up_pct.notna() & trin.notna()
+    keys = np.select([
+        up & ~high & (mcl > 0), up & ~high, up & high,
+        down & low, down & balanced & rising, down & balanced, down & high,
+        mid & low, mid & balanced, mid & high,
+    ], [k for k, *_ in STRUCTURES], "")
+    return pd.Series(np.where(ok, keys, ""), index=up_pct.index)
+
+
 def frame(table: pd.DataFrame, stats: pd.DataFrame, idx: pd.Series) -> pd.DataFrame:
     """Each day's readings, states and the 中证全指's change over the next 5 and 20 days."""
     st = stats.set_index("date").reindex(table.index)
@@ -89,6 +136,17 @@ def frame(table: pd.DataFrame, stats: pd.DataFrame, idx: pd.Series) -> pd.DataFr
                                   ["signal", "low", "high"], np.where(d.thrust.notna(), "mid", ""))
     d["adr_state"] = np.select([d.adr_r <= 10, d.adr_r >= 90], ["oversold", "hot"], np.where(d.adr_r.notna(), "normal", ""))
     d["trin_state"] = np.select([d.trin_r >= 80, d.trin_r <= 20], ["to_falling", "to_rising"], np.where(d.trin_r.notna(), "normal", ""))
+    # 当日市场结构: the day's breadth (涨家占比, ADL's day change), where the money went (TRIN_额,
+    # TRIN_量 to confirm), TRIN's move over 3 days, and MCL.
+    d["up_pct"], d["adl_day"] = table["up_pct"], st["up"] - st["down"]
+    d["n_up"], d["n_down"], d["n_flat"] = st["up"], st["down"], st["flat"]
+    d["limit_up"], d["limit_down"] = st.get("limit_up"), st.get("limit_down")
+    d["up_amt_pct"], d["amt_gap"] = table.get("up_amt_pct"), table.get("amt_gap")
+    d["vol_gap"], d["amount"] = table.get("vol_gap"), st.get("amount")
+    d["trin_amt"], d["trin_vol"] = table["trin_amt"], table["trin_vol"]
+    # How far TRIN_额 has climbed off its lowest of the 3 days before: a cluster breaking up.
+    d["trin3"] = table["trin_amt"] - table["trin_amt"].shift(1).rolling(3, min_periods=1).min()
+    d["structure"] = structure_states(d["up_pct"], d["trin_amt"], d["trin3"], d["mcl"])
     d["div_state"] = np.select([(d.idx20 > 0) & (d.adl20 < 0), (d.idx20 < 0) & (d.adl20 > 0),
                                 (d.idx20 > 0) & (d.adl20 > 0), (d.idx20 < 0) & (d.adl20 < 0)],
                                ["fake_up", "fake_down", "real_up", "real_down"], "")
@@ -288,14 +346,67 @@ def verdict(date: str | None = None, table=None, stats=None, idx=None) -> dict:
               f"③验真伪：{DIV_TEXT.get(now.div_state, '指数数据不足').split('：')[-1]}，"
               f"{TRIN_TEXT.get(now.trin_state, 'TRIN 无数据').split('：')[-1]}"]
     summary = headline + "；".join(points) + "。"
+    # 当日市场结构: every state with its rule, meaning and what followed it here; today's marked.
+    structure = {
+        "state": now["structure"] or None,
+        "readings": {"up": None if pd.isna(now.n_up) else int(now.n_up), "down": None if pd.isna(now.n_down) else int(now.n_down),
+                     "flat": None if pd.isna(now.n_flat) else int(now.n_flat),
+                     "limit_up": None if pd.isna(now.limit_up) else int(now.limit_up),
+                     "limit_down": None if pd.isna(now.limit_down) else int(now.limit_down),
+                     "up_amt_pct": None if pd.isna(now.up_amt_pct) else round(float(now.up_amt_pct), 2),
+                     "amt_gap": None if pd.isna(now.amt_gap) else round(float(now.amt_gap), 2),
+                     "adl_day": None if pd.isna(now.adl_day) else int(now.adl_day),
+                     "up_pct": None if pd.isna(now.up_pct) else round(float(now.up_pct), 2),
+                     "trin_amt": None if pd.isna(now.trin_amt) else round(float(now.trin_amt), 3),
+                     "trin_vol": None if pd.isna(now.trin_vol) else round(float(now.trin_vol), 3),
+                     "trin3": None if pd.isna(now.trin3) else round(float(now.trin3), 3),
+                     "mcl": None if pd.isna(now.mcl) else round(float(now.mcl), 1)},
+        "rows": [{"key": k, "label": label, "rule": rule, "meaning": meaning, "today": k == now["structure"],
+                  **_stats(hist, hist["structure"] == k)} for k, label, rule, meaning in STRUCTURES],
+    }
     return {
         "date": day, "index_date": idx.index[-1] if len(idx) else None, "baseline": base,
-        "history_from": hist.index[0], "history_to": hist.index[-1], "rows": rows,
+        "history_from": hist.index[0], "history_to": hist.index[-1], "rows": rows, "structure": structure,
         "steps": {"trend": trend, "timing": timing, "check": check},
         "conclusion": {"short": short, "short_word": word(short), "mid": mid, "mid_word": word(mid),
                        "joint": joint, "summary": summary, "headline": headline, "points": points, "watch": watches,
                        "text": f"① {trend['text']} ② {timing['text']} ③ {check['text']}"},
     }
+
+
+STRUCTURE_RANGES = {"1d": 1, "10d": 10, "30d": 30, "60d": 60, "6m": None}
+
+
+def structure_days(end: str | None = None, rng: str = "10d", table=None, stats=None) -> dict:
+    """当日市场结构 day by day over ``rng`` (1d / 10d / 30d / 60d trading days, or 6m) to ``end``:
+    each day's counts, limit moves, 涨家 / 涨额占比, 额价差, 量价差, MCL, TRIN_额 / TRIN_量, the
+    amount traded and the structure it reads as; the newest day first."""
+    if rng not in STRUCTURE_RANGES:
+        raise ValueError(f"range must be one of {', '.join(STRUCTURE_RANGES)}")
+    days = market._days_on_record(end)
+    end = days[-1]
+    if table is None:
+        table = breadth._table(breadth._key())
+    if stats is None:
+        stats, _ = market._span_stats(list(table.index))
+    d = frame(table, stats, pd.Series(dtype=float))
+    d = d[d.index <= end]
+    n = STRUCTURE_RANGES[rng]
+    d = d.tail(n) if n else d[d.index >= market._range_start(end, rng, days)]
+    label = {k: lab for k, lab, *_ in STRUCTURES}
+
+    def num(v, nd: int):
+        return None if v is None or pd.isna(v) else round(float(v), nd)
+
+    def whole(v):
+        return None if v is None or pd.isna(v) else int(v)
+    out = [{"date": day, "up": whole(r.n_up), "down": whole(r.n_down), "flat": whole(r.n_flat),
+            "limit_up": whole(r.limit_up), "limit_down": whole(r.limit_down),
+            "up_pct": num(r.up_pct, 2), "up_amt_pct": num(r.up_amt_pct, 2), "amt_gap": num(r.amt_gap, 2),
+            "vol_gap": num(r.vol_gap, 2), "mcl": num(r.mcl, 1), "trin_amt": num(r.trin_amt, 3), "trin_vol": num(r.trin_vol, 3),
+            "amount": num(r.amount, 0), "adl_day": whole(r.adl_day), "structure": r.structure or None,
+            "structure_label": label.get(r.structure)} for day, r in d.iloc[::-1].iterrows()]
+    return {"range": rng, "end": end, "days": out}
 
 
 def history(end: str | None = None, rng: str = "6m", table=None, stats=None, idx=None) -> dict:

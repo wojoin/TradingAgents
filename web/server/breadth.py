@@ -31,6 +31,12 @@
   广度推力    Zweig's breadth thrust: the 10-day EMA of rising ÷ (rising + falling); a signal
               when it climbs from under 0.40 to over 0.615 within 10 trading days.
   涨跌量比    the rising stocks' amount traded (and volume) ÷ the falling stocks'.
+  额价差      涨额占比 − 涨家占比 (percentage points): the rising stocks' share of the amount traded
+              less their share of the stocks traded; 量价差 the same with volume. TRIN's linear
+              cousin: positive when the money is with the rising side (资金强于宽度).
+  净新高      (new highs − new lows) ÷ the stocks traded × 100, for 60 and 250 days.
+  MCL 原始版  the McClellan oscillator on the raw count (rising − falling), not ratio-adjusted: the
+              classic definition, which most published figures use.
   情绪综合分  six readings of the day's short-term mood, each put on 0–100, and their average:
               涨跌比 (rises among rises and falls), 涨停跌停比, 封板率 (limit-ups among those
               that touched the limit), 涨停溢价 (−5% … +5%), 晋级率 (0 … 40%) and 空间板
@@ -71,7 +77,8 @@ _FIXED = ["prem_n", "prem_avg", "prem_up", "promo_1", "promo_2", "promo_3", "pro
           "conc100", "conc5pct", "amount", *[f"board_{b}" for b in ("主板", "创业板", "科创板", "北交所")],
           "trin_amt", "trin_vol", "trin_amt10", "trin_vol10", "trin_amt10_rank", "trin_vol10_rank",
           "mcl_osc", "mcl_sum", "mcl_ratio", "msi_cross", "ma250", "adr", "adr10", "adr10_rank", "abi", "abi10",
-          "thrust", "thrust_signal", "ud_amt", "ud_vol"]
+          "thrust", "thrust_signal", "ud_amt", "ud_vol",
+          "up_pct", "up_amt_pct", "up_vol_pct", "amt_gap", "vol_gap", "net60_pct", "net250_pct", "mcl_raw"]
 THRUST_LOW, THRUST_HIGH, THRUST_DAYS = 0.40, 0.615, 10
 MOOD_PARTS = {"updown": "涨跌比", "limit": "涨停跌停比", "seal": "封板率", "prem": "涨停溢价", "promo": "晋级率", "height": "空间板"}
 
@@ -234,6 +241,18 @@ def _table(key: tuple) -> pd.DataFrame:
         # In A-shares the few rising stocks often take more than their share of the money, so
         # TRIN sits under 1 most days: read it against its own past 250 days, not against 1.
         out[f"trin_{key}10_rank"] = avg.rolling(250, min_periods=60).apply(lambda x: (x <= x[-1]).mean() * 100, raw=True)
+    # 涨家 / 涨额 / 涨量占比 and the gaps between them (额价差, 量价差).
+    whole_n = n >= MIN_MARKET
+    up_pct = (adv / n * 100).where(whole_n)
+    out["up_pct"] = up_pct
+    for key, w in (("amt", a), ("vol", vol.reindex(index=pct.index, columns=pct.columns).where(traded))):
+        tot = w.sum(axis=1)
+        share = (w.where(rising).sum(axis=1) / tot * 100).where(whole_n & (tot > 0))
+        out[f"up_{key}_pct"] = share
+        out[f"{key}_gap"] = share - up_pct
+    for h in (60, 250):
+        out[f"net{h}_pct"] = ((out[f"nh{h}"] - out[f"nl{h}"]) / n * 100).where(whole_n)
+
     # 涨跌比 ADR, 绝对广量 ABI and Zweig's breadth thrust.
     whole = (adv + dec) >= MIN_MARKET
     adr = (adv / dec).where(whole & (dec > 0))
@@ -250,6 +269,8 @@ def _table(key: tuple) -> pd.DataFrame:
     ratio = ((adv - dec) / (adv + dec) * 1000).where((adv + dec) >= MIN_MARKET)
     e19, e39 = ratio.ewm(span=19, adjust=False).mean(), ratio.ewm(span=39, adjust=False).mean()
     out["mcl_ratio"] = ratio
+    raw = (adv - dec).astype(float).where((adv + dec) >= MIN_MARKET)
+    out["mcl_raw"] = (raw.ewm(span=19, adjust=False).mean() - raw.ewm(span=39, adjust=False).mean()).where(raw.notna())
     out["mcl_osc"] = (e19 - e39).where(ratio.notna())
     msi = (19 * e39 - 9 * e19).where(ratio.notna())      # MSI, the summation from the start of time
     out["mcl_sum"] = msi

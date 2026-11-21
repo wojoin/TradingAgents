@@ -113,11 +113,21 @@ const concSummary = computed(() => {
 
 // ---- TRIN (Arms index): TRIN_额 and TRIN_量, daily or their 10-day average ----
 const trin = useBreadth('market.trinRange', 'trin')
-const TRIN_VIEWS = [{ value: 'avg', label: '10日均' }, { value: 'day', label: '日值' }]
-const trinView = ref<'avg' | 'day'>('avg')
+const TRIN_VIEWS = [{ value: 'avg', label: 'TRIN 10日均' }, { value: 'day', label: 'TRIN 日值' }, { value: 'gap', label: '额价差 / 量价差' }]
+const trinView = ref<'avg' | 'day' | 'gap'>('avg')
+// 额价差 > 0: the rising stocks take more of the money than their share of the stocks.
+const gapWord = (g: Num) => (g === null || g === undefined ? '' : g > 0 ? '资金强于宽度（上涨股吸金）' : g < 0 ? '资金弱于宽度（下跌股吸金）' : '资金与宽度相当')
 const trinLines = computed<Line[]>(() => {
-  const avg = trinView.value === 'avg'
   const ds = trin.days.value
+  if (trinView.value === 'gap') {
+    const amt = pts(ds, (d) => d.amt_gap)
+    return [
+      { name: '额价差', color: '#2563eb', points: amt },
+      { name: '量价差', color: '#f59e0b', points: pts(ds, (d) => d.vol_gap) },
+      { name: '0（资金与宽度相当）', color: '#c0c6cf', points: amt.map((p) => ({ time: p.time, value: 0 })) },
+    ]
+  }
+  const avg = trinView.value === 'avg'
   const amt = pts(ds, (d) => (avg ? d.trin_amt10 : d.trin_amt))
   return [
     { name: avg ? 'TRIN_额 10日均' : 'TRIN_额', color: '#2563eb', points: amt },
@@ -125,6 +135,7 @@ const trinLines = computed<Line[]>(() => {
     { name: '1（平衡）', color: '#c0c6cf', points: amt.map((p) => ({ time: p.time, value: 1 })) },
   ]
 })
+const gapPp = (v: Num) => (v === null || v === undefined ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(2)}pp`)
 const trinMood = (r: Num) => (r === null || r === undefined ? '' : r >= 80 ? '偏高：下跌股吸走更多资金，偏空' : r <= 20 ? '偏低：资金集中在上涨股' : '处于常态区间')
 
 // ---- 广度推力 (Zweig breadth thrust) ----
@@ -156,9 +167,12 @@ const abiLines = computed<Line[]>(() => [
 
 // ---- 麦克连: the oscillator as bars, the summation index as a line ----
 const mcl = useBreadth('market.mclRange', 'mcl')
+const MCL_VIEWS = [{ value: 'ratio', label: '比例版' }, { value: 'raw', label: '原始版' }]
+const mclView = ref<'ratio' | 'raw'>('ratio')
+const mclOf = (d: BreadthDay) => (mclView.value === 'raw' ? d.mcl_raw : d.mcl_osc)
 const mclLines = computed<Line[]>(() => [{
-  name: '麦克连震荡指标', color: UP, bars: true,
-  points: mcl.days.value.flatMap((d) => (d.mcl_osc === null ? [] : [{ time: d.date, value: d.mcl_osc, color: d.mcl_osc >= 0 ? UP : DOWN }])),
+  name: mclView.value === 'raw' ? 'MCL 原始版' : 'MCL 比例版', color: UP, bars: true,
+  points: mcl.days.value.flatMap((d) => { const v = mclOf(d); return v === null ? [] : [{ time: d.date, value: v, color: v >= 0 ? UP : DOWN }] }),
 }])
 // ---- MSI 麦克莱伦累积指数 ----
 const msi = useBreadth('market.msiRange', 'msi')
@@ -267,15 +281,20 @@ const highLines = computed<Line[]>(() => {
   return [
     { name: `${n}日新高`, color: UP, points: pts(highs.days.value, (d) => (n === 60 ? d.nh60 : d.nh250)) },
     { name: `${n}日新低`, color: DOWN, points: pts(highs.days.value, (d) => (n === 60 ? d.nl60 : d.nl250)) },
-    { name: '净值（新高 − 新低）', color: '#7c3aed',
-      points: pts(highs.days.value, (d) => { const hi = n === 60 ? d.nh60 : d.nh250; const lo = n === 60 ? d.nl60 : d.nl250
-        return hi === null || lo === null ? null : hi - lo }) },
+  ]
+})
+const netLines = computed<Line[]>(() => {
+  const n = highSpan.value
+  const p = pts(highs.days.value, (d) => (n === 60 ? d.net60_pct : d.net250_pct))
+  return [
+    { name: `净新高 ${n}（%）`, color: '#7c3aed', points: p },
+    { name: '0', color: '#c0c6cf', points: p.map((x) => ({ time: x.time, value: 0 })) },
   ]
 })
 const highLast = computed(() => {
   const d = highs.last.value
   if (!d) return null
-  return highSpan.value === 60 ? { hi: d.nh60, lo: d.nl60 } : { hi: d.nh250, lo: d.nl250 }
+  return highSpan.value === 60 ? { hi: d.nh60, lo: d.nl60, net: d.net60_pct } : { hi: d.nh250, lo: d.nl250, net: d.net250_pct }
 })
 
 // ---- 均线上方占比 ----
@@ -445,31 +464,12 @@ const maMood = (v: Num) => (v === null || v === undefined ? '' : v >= 80 ? '偏�
     <SelectButton v-model="highSpan" :options="HIGH_SPANS" option-label="label" option-value="value" :allow-empty="false" size="small" class="spans" />
     <p v-if="highs.error.value" class="bad small">{{ highs.error.value }}</p>
     <p v-else-if="highLast" class="sum">
-      {{ highs.last.value?.date }}：创{{ highSpan }}日新高 <b class="up">{{ highLast.hi ?? '—' }}</b> 家，新低 <b class="down">{{ highLast.lo ?? '—' }}</b> 家<template v-if="highLast.hi !== null && highLast.lo !== null">，净值 <b :class="cls(highLast.hi - highLast.lo)">{{ highLast.hi - highLast.lo > 0 ? '+' : '' }}{{ highLast.hi - highLast.lo }}</b></template>
+      {{ highs.last.value?.date }}：创{{ highSpan }}日新高 <b class="up">{{ highLast.hi ?? '—' }}</b> 家，新低 <b class="down">{{ highLast.lo ?? '—' }}</b> 家<template v-if="highLast.hi !== null && highLast.lo !== null">，净值 <b :class="cls(highLast.hi - highLast.lo)">{{ highLast.hi - highLast.lo > 0 ? '+' : '' }}{{ highLast.hi - highLast.lo }}</b> 家</template><template v-if="highLast.net !== null">，<b>净新高 {{ highSpan }}</b> <b :class="cls(highLast.net)">{{ highLast.net > 0 ? '+' : '' }}{{ highLast.net.toFixed(2) }}</b>（占当日交易家数的 %）</template>
     </p>
     <p v-else-if="highs.loading.value" class="muted small"><i class="pi pi-spin pi-spinner" /> 统计中</p>
-    <p class="muted small">收盘价（复权）高于此前 {{ highSpan }} 个交易日每天收盘的为新高，低于的为新低。新高多于新低（净值为正）说明市场在走强；净值由负转正、或新低家数开始减少，是广度转好的早期信号；指数创新高而新高家数减少，是上涨面收窄的警示。</p>
-    <LineChart v-if="highs.data.value" :lines="highLines" :format="(v) => `${Math.round(v)}`" :height="180" />
-  </section>
-
-  <!-- 均线上方占比 -->
-  <section v-if="has('ma')" class="card">
-    <div class="head">
-      <h3>均线上方占比(% of Stocks Above MA)</h3>
-      <Select v-model="mas.range.value" :options="RANGES" option-label="label" option-value="value" size="small" class="range" />
-    </div>
-    <p v-if="mas.error.value" class="bad small">{{ mas.error.value }}</p>
-    <p v-else-if="mas.last.value" class="sum">
-      {{ mas.last.value.date }}：P20 <b>{{ pct(mas.last.value.ma20) }}</b>
-      <span v-if="maMood(mas.last.value.ma20)" class="muted">（{{ maMood(mas.last.value.ma20) }}）</span> ·
-      P60 <b>{{ pct(mas.last.value.ma60) }}</b>
-      <span v-if="maMood(mas.last.value.ma60)" class="muted">（{{ maMood(mas.last.value.ma60) }}）</span> ·
-      P250 <b>{{ pct(mas.last.value.ma250) }}</b>
-      <span v-if="maMood(mas.last.value.ma250)" class="muted">（{{ maMood(mas.last.value.ma250) }}）</span>
-    </p>
-    <p v-else-if="mas.loading.value" class="muted small"><i class="pi pi-spin pi-spinner" /> 统计中</p>
-    <p class="muted small">P20 / P60 / P250：收盘价（复权）高于自身 20 日、60 日、250 日（年线）均线的股票占比。高于 80% 偏热、低于 20% 超跌；20 日线看短期，60 日线看中期，250 日线看长期：年线上方占比极低后回升，常对应中长期底部的构筑。</p>
-    <LineChart v-if="mas.data.value" :lines="maLines" :format="(v) => pct(v)" :height="180" />
+    <p class="muted small">收盘价（复权）高于此前 {{ highSpan }} 个交易日每天收盘的为新高，低于的为新低。新高多于新低（净值为正）说明市场在走强；净新高 = （新高 − 新低）÷ 当日交易家数 × 100，可在不同日子间直接比较；净值由负转正、或新低家数开始减少，是广度转好的早期信号；指数创新高而新高家数减少，是上涨面收窄的警示。</p>
+    <LineChart v-if="highs.data.value" :lines="highLines" :format="(v) => `${Math.round(v)}`" :height="160" />
+    <LineChart v-if="highs.data.value" :lines="netLines" :format="(v) => v.toFixed(2)" :height="110" />
   </section>
 
   <!-- TRIN 阿姆氏指标 -->
@@ -495,11 +495,40 @@ const maMood = (v: Num) => (v === null || v === undefined ? '' : v >= 80 ? '偏�
         <span class="tkey">涨跌量比</span> 上涨股 ÷ 下跌股 成交额 <b>{{ trin.last.value.ud_amt?.toFixed(2) ?? '—' }}</b>，成交量 <b>{{ trin.last.value.ud_vol?.toFixed(2) ?? '—' }}</b>
         <span class="muted">（小于 1 卖压主导）</span>
       </div>
+      <div class="trow small">
+        <span class="tkey">占比</span> 涨家 <b>{{ pct(trin.last.value.up_pct, 2) }}</b> · 涨额 <b>{{ pct(trin.last.value.up_amt_pct, 2) }}</b> · 涨量 <b>{{ pct(trin.last.value.up_vol_pct, 2) }}</b>
+      </div>
+      <div class="trow">
+        <span class="tkey">额价差</span> <b :class="cls(trin.last.value.amt_gap)">{{ gapPp(trin.last.value.amt_gap) }}</b> ·
+        <span class="tkey short">量价差</span> <b :class="cls(trin.last.value.vol_gap)">{{ gapPp(trin.last.value.vol_gap) }}</b>
+        <span class="state">→ {{ gapWord(trin.last.value.amt_gap) }}</span>
+      </div>
     </div>
     <p v-else-if="trin.loading.value" class="muted small"><i class="pi pi-spin pi-spinner" /> 统计中</p>
     <p class="muted small">（上涨家数 ÷ 下跌家数）÷（上涨股成交额 ÷ 下跌股成交额），TRIN_量用成交量。小于 1 表示资金更多流向上涨股，大于 1 表示流向下跌股。
+      <b>额价差</b> = 涨额占比 − 涨家占比（百分点），<b>量价差</b>用成交量：是 TRIN 的线性版，大于 0 即「资金强于宽度」（TRIN &lt; 1），读数更直观。
       A 股资金常集中在少数上涨股，TRIN 多数时间低于 1，<b>宜看它在近一年中的分位</b>，并结合腾落线、麦克连判断是普涨还是少数股抱团。</p>
     <LineChart v-if="trin.data.value" :lines="trinLines" :format="(v) => v.toFixed(2)" :height="180" />
+  </section>
+
+  <!-- 均线上方占比 -->
+  <section v-if="has('ma')" class="card">
+    <div class="head">
+      <h3>均线上方占比(% of Stocks Above MA)</h3>
+      <Select v-model="mas.range.value" :options="RANGES" option-label="label" option-value="value" size="small" class="range" />
+    </div>
+    <p v-if="mas.error.value" class="bad small">{{ mas.error.value }}</p>
+    <p v-else-if="mas.last.value" class="sum">
+      {{ mas.last.value.date }}：P20 <b>{{ pct(mas.last.value.ma20) }}</b>
+      <span v-if="maMood(mas.last.value.ma20)" class="muted">（{{ maMood(mas.last.value.ma20) }}）</span> ·
+      P60 <b>{{ pct(mas.last.value.ma60) }}</b>
+      <span v-if="maMood(mas.last.value.ma60)" class="muted">（{{ maMood(mas.last.value.ma60) }}）</span> ·
+      P250 <b>{{ pct(mas.last.value.ma250) }}</b>
+      <span v-if="maMood(mas.last.value.ma250)" class="muted">（{{ maMood(mas.last.value.ma250) }}）</span>
+    </p>
+    <p v-else-if="mas.loading.value" class="muted small"><i class="pi pi-spin pi-spinner" /> 统计中</p>
+    <p class="muted small">P20 / P60 / P250：收盘价（复权）高于自身 20 日、60 日、250 日（年线）均线的股票占比。高于 80% 偏热、低于 20% 超跌；20 日线看短期，60 日线看中期，250 日线看长期：年线上方占比极低后回升，常对应中长期底部的构筑。</p>
+    <LineChart v-if="mas.data.value" :lines="maLines" :format="(v) => pct(v)" :height="180" />
   </section>
 
   <!-- MCL 麦克连指标 -->
@@ -508,14 +537,17 @@ const maMood = (v: Num) => (v === null || v === undefined ? '' : v >= 80 ? '偏�
       <h3>MCL 麦克连指标</h3>
       <Select v-model="mcl.range.value" :options="RANGES" option-label="label" option-value="value" size="small" class="range" />
     </div>
+    <SelectButton v-model="mclView" :options="MCL_VIEWS" option-label="label" option-value="value" :allow-empty="false" size="small" class="spans" />
     <p v-if="mcl.error.value" class="bad small">{{ mcl.error.value }}</p>
     <p v-else-if="mcl.last.value" class="sum">
-      {{ mcl.last.value.date }}：震荡指标 <b :class="cls(mcl.last.value.mcl_osc)">{{ mcl.last.value.mcl_osc?.toFixed(1) ?? '—' }}</b>
-      （{{ (mcl.last.value.mcl_osc ?? 0) >= 0 ? '0 轴上方，宽度动能向上' : '0 轴下方，宽度动能向下' }}）
+      {{ mcl.last.value.date }}：{{ mclView === 'raw' ? '原始版' : '比例版' }} <b :class="cls(mclOf(mcl.last.value))">{{ mclOf(mcl.last.value)?.toFixed(1) ?? '—' }}</b>
+      （{{ (mclOf(mcl.last.value) ?? 0) >= 0 ? '0 轴上方，宽度动能向上' : '0 轴下方，宽度动能向下' }}）
+      <span class="muted">· {{ mclView === 'raw' ? '比例版' : '原始版' }} {{ (mclView === 'raw' ? mcl.last.value.mcl_osc : mcl.last.value.mcl_raw)?.toFixed(1) ?? '—' }}</span>
       <template v-if="mclTurn">；最近一次{{ mclTurn.up ? '上穿' : '下穿' }} 0 轴在 {{ mclTurn.date }}</template>
     </p>
     <p v-else-if="mcl.loading.value" class="muted small"><i class="pi pi-spin pi-spinner" /> 统计中</p>
-    <p class="muted small">每日（上涨 − 下跌）÷（上涨 + 下跌）× 1000，取其 19 日与 39 日指数均线之差。
+    <p class="muted small"><b>比例版</b>：每日（上涨 − 下跌）÷（上涨 + 下跌）× 1000，取其 19 日与 39 日指数均线之差，不受股票总数变化影响；
+      <b>原始版</b>：直接对（上涨 − 下跌）家数取同样的均线差，是经典定义，多数公开数据用它，数值约为比例版的 5–6 倍。
       MCL 是广度的「速度」，即腾落线的「MACD」：上穿 0 轴宽度转强、下穿转弱，与指数背离是动能衰竭的警示；它的累加见右侧 MSI。</p>
     <LineChart v-if="mcl.data.value" :lines="mclLines" :format="(v) => v.toFixed(1)" :height="180" />
   </section>
@@ -602,6 +634,8 @@ h3 { margin: 0; font-size: 15px; }
 @media (max-width: 900px) { .mood { grid-template-columns: 1fr; } }
 .trow { line-height: 1.8; }
 .tkey { display: inline-block; min-width: 64px; font-weight: 600; }
+.tkey.short { min-width: 0; }
+.state { margin-left: 6px; font-weight: 600; }
 .btable { width: 100%; border-collapse: collapse; font-size: 12px; margin: 8px 0 4px; font-variant-numeric: tabular-nums; }
 .btable th { font-weight: 500; color: var(--muted); text-align: left; padding: 3px 4px; border-bottom: 1px solid var(--border); white-space: nowrap; }
 .btable td { padding: 3px 4px; border-bottom: 1px solid #f1f3f6; white-space: nowrap; }

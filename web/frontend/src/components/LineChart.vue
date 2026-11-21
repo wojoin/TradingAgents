@@ -14,8 +14,12 @@ export interface Line {
 
 // ``rows``: line names grouped into legend rows (any line not named goes on a row of its own at
 // the end); without it the legend is one wrapping row.
+// ``levels``: labelled horizontal lines (on the first line's scale), shown whether or not the
+// data reaches them; ``range``: the value axis fixed to [min, max] instead of fitted to the data;
+// ``markers``: a dot on every point.
 const props = withDefaults(defineProps<{
   lines: Line[]; format?: (v: number) => string; height?: number; pick?: boolean; rows?: string[][]
+  levels?: { value: number; title: string; color?: string }[]; range?: [number, number]; markers?: boolean
 }>(), {
   format: (v: number) => v.toLocaleString('zh-CN'),
   height: 240,
@@ -74,11 +78,19 @@ function draw() {
     }
     const s = chart!.addSeries(LineSeries, {
       color: l.color, lineWidth: 2, priceLineVisible: false, lastValueVisible: false,
-      pointMarkersVisible: single, pointMarkersRadius: 4, priceFormat,
+      pointMarkersVisible: single || props.markers, pointMarkersRadius: props.markers ? 3 : 4, priceFormat,
+      ...(props.range ? { autoscaleInfoProvider: () => ({ priceRange: { minValue: props.range![0], maxValue: props.range![1] } }) } : {}),
     })
     s.setData(l.points.map((p) => ({ time: p.time as Time, value: p.value })))
     return s
   })
+  // The labelled levels, drawn on the first series (they share its scale).
+  if (series.length && props.levels) {
+    for (const lv of props.levels) {
+      series[0].createPriceLine({ price: lv.value, color: lv.color ?? '#c0c6cf', lineWidth: 1, lineStyle: 2,
+                                  axisLabelVisible: true, title: lv.title })
+    }
+  }
   chart.timeScale().fitContent()
   near.value = null
 }

@@ -56,6 +56,7 @@ const spread = computed(() => {
   const max = Math.max(1, ...counts)
   return {
     total: pcts.length,
+    listed: props.rows.length,          // 有效: the stocks with a change, of all the stocks listed that day
     up: pcts.filter((p) => p > 0).length,
     down: pcts.filter((p) => p < 0).length,
     flat: pcts.filter((p) => p === 0).length,
@@ -273,6 +274,8 @@ const amountSummary = computed(() => {
   return { n: days.length, last, avg: avg(days, (d) => d.amount), hi, lo,
            change: prev && prev.amount ? (last.amount / prev.amount - 1) * 100 : null }
 })
+// 放量 / 缩量: the day's amount against the 5 trading days before's average (±20%).
+const volumeWord = (r: number | null) => (r === null ? '' : r >= 1.2 ? '放量' : r <= 0.8 ? '缩量' : r >= 1 ? '温和放量' : '温和缩量')
 const note = computed(() => trend.data.value?.note || amount.data.value?.note || '')
 </script>
 
@@ -301,7 +304,7 @@ const note = computed(() => trend.data.value?.note || amount.data.value?.note ||
         <section class="card wide">
           <div class="head">
             <h3>涨跌分布</h3>
-            <span class="muted small">{{ date }} · 全部A股 {{ spread.total }} 只</span>
+            <span class="muted small" :title="'当日快照中有涨跌幅的股票（停牌等无涨跌幅的不计）'">{{ date }} · 有效 {{ spread.total }} 只 / 共 {{ spread.listed }} 只（{{ pctOf(spread.total, spread.listed) }}）</span>
           </div>
           <p class="sum">
             <span class="up">上涨 {{ spread.up }} 家（{{ pctOf(spread.up, spread.total) }}）</span> ·
@@ -356,6 +359,10 @@ const note = computed(() => trend.data.value?.note || amount.data.value?.note ||
             {{ amountSummary.last.date }} 成交 <b>{{ yi(amountSummary.last.amount / 1e8) }}</b>
             <span v-if="amountSummary.change !== null" :class="amountSummary.change >= 0 ? 'up' : 'down'">
               （较前一日 {{ signed(amountSummary.change, 1) }}）</span>
+            <template v-if="amountSummary.last.amount_r5 !== null">
+              <b :class="(amountSummary.last.amount_r5 ?? 1) >= 1 ? 'up' : 'down'">{{ volumeWord(amountSummary.last.amount_r5) }}</b>
+              <span class="muted">（为前 5 日均量的 {{ amountSummary.last.amount_r5?.toFixed(2) }} 倍<template v-if="amountSummary.last.amount_r20 !== null">、前 20 日的 {{ amountSummary.last.amount_r20?.toFixed(2) }} 倍</template>）</span>
+            </template>
             <template v-if="amountSummary.n > 1">
               ；{{ amountSummary.n }} 个交易日日均 {{ yi(amountSummary.avg / 1e8) }}，
               最高 {{ yi(amountSummary.hi.amount / 1e8) }}（{{ amountSummary.hi.date }}），

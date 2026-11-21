@@ -124,6 +124,8 @@ export interface MarketRow {
   amplitude: number | null
   industry: string | null
   sub_industry: string | null
+  industry3: string | null      // 申万三级: from 申万's files, else 乐咕乐股's copy
+  industry3_src?: 'lg'          // set when it is 乐咕乐股's
   turnover: number | null
   pe_ttm: number | null
   eps_ttm: number | null
@@ -154,6 +156,8 @@ export interface MarketDayStats {
   limit_up: number
   limit_down: number
   broken: number            // touched the upper limit, closed below it (炸板)
+  amount_r5: number | null  // the amount ÷ the 5 trading days before's average (放量 > 1)
+  amount_r20: number | null //   and the 20 days before's
 }
 export interface MarketStats {
   range: StatsRange
@@ -243,10 +247,30 @@ export interface BreadthVerdict {
   history_from: string
   history_to: string
   rows: VerdictRow[]
+  // 当日市场结构: the day's 涨家占比 / ADL, TRIN_额 / TRIN_量 and MCL together, every state with what followed it
+  structure: {
+    state: string | null
+    readings: { up: number | null; down: number | null; flat: number | null; limit_up: number | null; limit_down: number | null;
+                up_amt_pct: number | null; amt_gap: number | null; adl_day: number | null; up_pct: number | null; trin_amt: number | null; trin_vol: number | null; trin3: number | null; mcl: number | null }
+    rows: (VerdictStats & { key: string; label: string; rule: string; meaning: string; today: boolean })[]
+  }
   steps: Record<'trend' | 'timing' | 'check', { score: number; lean: string; text: string }>
   conclusion: { short: number; short_word: string; mid: number; mid_word: string; joint: VerdictStats; summary: string; headline: string; points: string[];
                 watch: (VerdictStats & { signal: string })[]; text: string }
 }
+
+// 当日市场结构 day by day (the newest first).
+export type StructureRange = '1d' | '10d' | '30d' | '60d' | '6m'
+export interface StructureDay {
+  date: string
+  up: number | null; down: number | null; flat: number | null
+  limit_up: number | null; limit_down: number | null
+  up_pct: number | null; up_amt_pct: number | null; amt_gap: number | null; vol_gap: number | null
+  mcl: number | null; trin_amt: number | null; trin_vol: number | null
+  amount: number | null; adl_day: number | null
+  structure: string | null; structure_label: string | null
+}
+export interface StructureDays { range: StructureRange; end: string; days: StructureDay[] }
 
 // The reading the card would have given on each day of a span, and how the market then did.
 export interface VerdictDay {
@@ -499,6 +523,14 @@ export interface BreadthDay {
   thrust_signal: boolean | null  // a breadth thrust fired this day (from under 0.40 to over 0.615 in 10 days)
   ud_amt: number | null          // rising stocks' amount traded ÷ falling stocks'
   ud_vol: number | null          //   and volume
+  up_pct: number | null          // 涨家占比: rising stocks ÷ the stocks traded (%)
+  up_amt_pct: number | null      // 涨额占比: the rising stocks' share of the amount traded (%)
+  up_vol_pct: number | null      // 涨量占比: their share of the volume (%)
+  amt_gap: number | null         // 额价差: 涨额占比 − 涨家占比 (pp); > 0 the money is stronger than the breadth
+  vol_gap: number | null         // 量价差: 涨量占比 − 涨家占比 (pp)
+  net60_pct: number | null       // 净新高: (new highs − new lows) ÷ the stocks traded × 100
+  net250_pct: number | null
+  mcl_raw: number | null         // MCL 原始版: on the raw count (rising − falling), not ratio-adjusted
   [size: `size_${string}`]: number | null   // median change of a size band (%): size_大盘 …
 }
 export interface MarketBreadth {
@@ -569,6 +601,31 @@ export interface MarketTable {
   note: string | null
   count: number
   rows: MarketRow[]
+  // The 申万三级 set, built in the background on first use and re-checked monthly.
+  sw3?: {
+    ready: boolean; building: boolean; done: number; total: number
+    built: string | null       // last checked
+    updated?: string | null    // last changed (the file rewritten)
+    last_change?: { date: string; added: number; removed: number; moved: number } | null
+    error: string | null
+  }
+  sw_class?: SwClassStatus
+}
+// 申万's own classification files kept locally (.akshare_data/manual/sw_class/).
+export interface SwClassStatus {
+  ready: boolean; stock_file: boolean; code_file: boolean
+  as_of: string | null       // the file's latest 更新日期 (what 申万 published)
+  checked: string | null     // last imported or compared
+  updated: string | null     // last changed (copied)
+  due: boolean               // a month since the last check
+  last_change: { date: string; added: number; removed: number; moved: number } | null
+  stocks: number
+  url: string; code_url: string; dir: string; downloads: string
+}
+export interface SwClassImport {
+  found: boolean; changed?: boolean; as_of?: string | null; error?: string
+  diff?: { added: number; removed: number; moved: number } | null
+  status: SwClassStatus
 }
 
 export interface WatchRow extends Omit<Partial<MarketRow>, "code" | "name"> {
@@ -663,6 +720,9 @@ export const api = {
   runs: () => request<RunSummary[]>('/api/runs'),
   reports: () => request<ReportMeta[]>('/api/reports'),
   market: (date?: string) => request<MarketTable>(`/api/market${date ? `?date=${date}` : ''}`),
+  marketSw3: () => request<NonNullable<MarketTable['sw3']>>('/api/market/sw3'),
+  swClass: () => request<SwClassStatus>('/api/market/sw-class'),
+  importSwClass: (since: number) => request<SwClassImport>(`/api/market/sw-class/import?since=${since}`, { method: 'POST' }),
   marketCalendar: () => request<MarketCalendar>('/api/market/calendar'),
   marketStats: (range: StatsRange, end?: string) =>
     request<MarketStats>(`/api/market/stats?range=${range}${end ? `&end=${end}` : ''}`),
@@ -672,6 +732,8 @@ export const api = {
   marketValuation: (end?: string) => request<MarketValuation>(`/api/market/valuation${end ? `?end=${end}` : ''}`),
   marketMargin: (range: StatsRange, end?: string) =>
     request<MarketMargin>(`/api/market/margin?range=${range}${end ? `&end=${end}` : ''}`),
+  breadthStructure: (range: StructureRange, end?: string) =>
+    request<StructureDays>(`/api/market/breadth/structure?range=${range}${end ? `&end=${end}` : ''}`),
   breadthVerdictHistory: (range: StatsRange, end?: string) =>
     request<VerdictHistory>(`/api/market/breadth/verdict/history?range=${range}${end ? `&end=${end}` : ''}`),
   breadthVerdict: (date?: string) => request<BreadthVerdict>(`/api/market/breadth/verdict${date ? `?date=${date}` : ''}`),

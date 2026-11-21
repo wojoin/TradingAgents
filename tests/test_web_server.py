@@ -13,7 +13,7 @@ import zipfile
 import pytest
 from fastapi.testclient import TestClient
 
-from web.server import settings
+from web.server import settings, sw3, sw_class
 from web.server.app import create_app
 from web.server.runs import Progress, Run, RunManager
 
@@ -49,6 +49,7 @@ def prefs(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "get_current_date", lambda: TODAY)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
     monkeypatch.setenv("OPENAI_API_KEY", "")
+    monkeypatch.setattr(sw3, "ensure", lambda: None)   # never a real 申万三级 download in tests
     for var in ("TRADINGAGENTS_MAX_DEBATE_ROUNDS", "TRADINGAGENTS_MAX_RISK_ROUNDS", "TRADINGAGENTS_LLM_BACKEND_URL"):
         monkeypatch.delenv(var, raising=False)
     return path
@@ -279,6 +280,109 @@ def test_the_market_table_joins_industry_and_eastmoney_main_flow(mkt):
     row = {r["code"]: r for r in table["rows"]}
     assert row["300308"]["industry"] == "通信" and row["300308"]["main_flow"] == -1.2e9 and row["300308"]["pct_chg"] == -8.391
     assert row["600519"]["sub_industry"] == "白酒Ⅱ" and row["000001"]["industry"] is None
+
+
+def test_sw3_builds_level_three_and_the_table_carries_it(mkt):
+    import pandas as pd
+
+    market, fake, data = mkt
+    fake.stock_individual_fund_flow_rank = _boom
+    fake.stock_fund_flow_individual = lambda symbol: pd.DataFrame()
+    listing = pd.DataFrame({"行业代码": ["850111.SI", "857421.SI"], "行业名称": ["白酒Ⅲ", "通信网络设备及器件"],
+                            "上级行业": ["白酒Ⅱ", "通信设备"]})
+    cons = {"850111.SI": pd.DataFrame({"股票代码": ["600519.SH"]}),
+            "857421.SI": pd.DataFrame({"股票代码": ["300308.SZ"]})}
+    assert sw3.members().empty and sw3.status()["ready"] is False
+    meta = sw3.build(lambda: listing, lambda c: cons[c], pause=0)
+    assert meta["stocks"] == 2 and meta["failed"] == [] and (data / "web" / "sw3" / "members.parquet").exists()
+    row = {r["code"]: r for r in market.market_table()["rows"]}
+    assert row["600519"]["industry3"] == "白酒Ⅲ" and row["300308"]["industry3"] == "通信网络设备及器件"
+    assert row["000001"]["industry3"] is None
+
+    # A later build where one industry fails keeps that industry's stocks from the last build.
+    def flaky(c):
+        if c == "857421.SI":
+            raise ConnectionError("down")
+        return cons[c]
+    path = data / "web" / "sw3" / "members.parquet"
+    before = path.stat().st_mtime_ns
+    meta = sw3.build(lambda: listing, flaky, pause=0)
+    assert meta["failed"] == ["通信网络设备及器件"] and sw3.members().loc["300308", "sw3"] == "通信网络设备及器件"
+    # Nothing changed: the file on disk is left as it was, and no change is recorded.
+    assert path.stat().st_mtime_ns == before and meta["changes"] == []
+
+    # A stock that moved and one that joined: the file is rewritten and the change recorded.
+    cons["850111.SI"] = pd.DataFrame({"股票代码": ["600519.SH", "300308.SZ", "000001.SZ"]})
+    cons["857421.SI"] = pd.DataFrame({"股票代码": []})
+    meta = sw3.build(lambda: listing, lambda c: cons[c], pause=0)
+    last = meta["changes"][0]
+    assert (last["added"], last["removed"], last["moved"]) == (1, 0, 1)
+    assert last["examples"]["moved"] == ["300308"] and sw3.members().loc["000001", "sw3"] == "白酒Ⅲ"
+    assert sw3.status()["last_change"]["added"] == 1
+
+
+def _sw_files(folder, rows):
+    """申万's two files as pandas reads them (xlsx content under the .xls names is fine)."""
+    import pandas as pd
+
+    folder.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"行业代码": ["340501", "730102", "480301"], "一级行业名称": ["食品饮料", "通信", "银行"],
+                  "二级行业名称": ["白酒Ⅱ", "通信设备", "股份制银行Ⅱ"],
+                  "三级行业名称": ["白酒Ⅲ", "通信网络设备及器件", "股份制银行Ⅲ"]}).to_excel(
+        folder / "SwClassCode_2021.xls", index=False, engine="openpyxl")
+    pd.DataFrame(rows, columns=["股票代码", "计入日期", "行业代码", "更新日期"]).to_excel(
+        folder / "StockClassifyUse_stock.xls", index=False, engine="openpyxl")
+    return folder
+
+
+def test_sw_class_files_give_all_three_levels_and_lg_fills_the_rest(mkt, tmp_path, monkeypatch):
+    import pandas as pd
+
+    market, fake, data = mkt
+    fake.stock_individual_fund_flow_rank = _boom
+    fake.stock_fund_flow_individual = lambda symbol: pd.DataFrame()
+    downloads = tmp_path / "Downloads"
+    monkeypatch.setattr(sw_class, "downloads_dir", lambda: downloads)
+    # 乐咕乐股 has 000001 only: the fallback, used where 申万's files have nothing.
+    sw3.build(lambda: pd.DataFrame({"a": ["857831.SI"], "b": ["股份制银行Ⅲ"], "c": ["股份制银行Ⅱ"]}),
+              lambda c: pd.DataFrame({"股票代码": ["000001.SZ"]}), pause=0)
+    assert sw_class.import_downloads()["found"] is False
+    # The browser saved both: 600519 moved from 通信 to 白酒 in 2021 (the latest entry counts).
+    _sw_files(downloads, [["600519", "2001-08-27", "730102", "2015-10-27"],
+                          ["600519", "2021-07-30", "340501", "2021-07-31"],
+                          ["300308", "2012-04-10", "730102", "2026-11-20"]] * 40)
+    out = sw_class.import_downloads()
+    assert out["found"] and out["changed"] and out["as_of"] == "2026-11-20"
+    market.industries.cache_clear()
+    rows = {r["code"]: r for r in market.market_table()["rows"]}
+    assert (rows["600519"]["industry"], rows["600519"]["sub_industry"], rows["600519"]["industry3"]) == ("食品饮料", "白酒Ⅱ", "白酒Ⅲ")
+    assert rows["300308"]["industry3"] == "通信网络设备及器件" and "industry3_src" not in rows["300308"]
+    assert rows["000001"]["industry3"] == "股份制银行Ⅲ" and rows["000001"]["industry3_src"] == "lg"
+    assert sw_class.status()["ready"] and sw_class.status()["due"] is False
+
+    # The same file downloaded again: not copied, nothing recorded.
+    kept = (data / "manual" / "sw_class" / "StockClassifyUse_stock.xls").stat().st_mtime_ns
+    again = sw_class.import_downloads()
+    assert again["changed"] is False and (data / "manual" / "sw_class" / "StockClassifyUse_stock.xls").stat().st_mtime_ns == kept
+    # A newer one in which 000001 joins and 300308 moves: copied, and the change recorded.
+    _sw_files(downloads, [["600519", "2021-07-30", "340501", "2021-07-31"],
+                          ["300308", "2026-12-01", "480301", "2026-12-01"],
+                          ["000001", "2021-07-30", "480301", "2026-12-01"]] * 40)
+    out = sw_class.import_downloads()
+    assert out["changed"] and (out["diff"]["added"], out["diff"]["removed"], out["diff"]["moved"]) == (1, 0, 1)
+    assert sw_class.status()["last_change"]["examples"]["moved"] == ["300308"]
+
+
+def test_the_sw_class_import_endpoint_looks_only_at_files_after_since(env, tmp_path, monkeypatch):
+    downloads = tmp_path / "Downloads"
+    monkeypatch.setattr(sw_class, "downloads_dir", lambda: downloads)
+    monkeypatch.setattr(sw_class, "_dir", lambda: tmp_path / "kept")
+    _sw_files(downloads, [["600519", "2021-07-30", "340501", "2021-07-31"]] * 200)
+    client = env[0]
+    late = (downloads / "StockClassifyUse_stock.xls").stat().st_mtime + 60
+    assert client.post(f"/api/market/sw-class/import?since={late}").json()["found"] is False
+    r = client.post("/api/market/sw-class/import?since=0").json()
+    assert r["found"] and r["changed"] and r["status"]["ready"]
 
 
 def test_without_eastmoney_the_flow_is_ths_and_labelled_so(mkt):
@@ -582,7 +686,8 @@ def test_market_stats_count_rises_and_falls_and_sum_the_amount_day_by_day(mkt, m
         "2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06", "2026-11-12", "2026-11-13"]
     by = {d["date"]: d for d in st["days"]}
     assert by["2026-11-05"] == {"date": "2026-11-05", "up": 1, "down": 0, "flat": 0, "total": 1, "amount": 0.0,
-                                "median": 10.0, "limit_up": 0, "limit_down": 0, "broken": 0}
+                                "median": 10.0, "limit_up": 0, "limit_down": 0, "broken": 0,
+                                "amount_r5": None, "amount_r20": None}, "放量 / 缩量 needs 5 (20) days before"
     assert (by["2026-11-13"]["up"], by["2026-11-13"]["down"], by["2026-11-13"]["total"]) == (3, 1, 4)
     assert by["2026-11-12"]["amount"] == pytest.approx(2.59e10 + 5.95e9 + 2e9)
     assert (data / "web" / "market_stats_v3.parquet").exists() and (data / "web" / "limit_events_v3.parquet").exists()
@@ -961,6 +1066,11 @@ def test_breadth_counts_new_highs_moving_averages_size_bands_and_limit_follow_th
     assert (day["adr"], day["adr10"], day["abi"], day["thrust"]) == (2.0, 2.0, 33.333, 0.667)
     assert day["thrust_signal"] is False and day["ma250"] is None, "not 250 days of history"
     assert (day["ud_amt"], day["ud_vol"]) == (2.0, 4.0), "rising stocks' amount 2亿 vs 1亿; volume 4 vs 1"
+    # 涨家占比 2/4; the amount evenly spread, so 涨额占比 is the same (额价差 0); by volume the
+    # rising pair trade 4 of 6 (量价差 +16.67). 60-day: 2 highs, 1 low of 4 stocks.
+    assert (day["up_pct"], day["up_amt_pct"], day["amt_gap"]) == (50.0, 50.0, 0.0)
+    assert (day["up_vol_pct"], day["vol_gap"]) == (66.667, 16.667)
+    assert day["net60_pct"] == 25.0 and day["mcl_raw"] == 0, "a steady net count: the raw oscillator at 0 too"
     # 情绪综合分: 涨跌比 75, 涨停跌停比 100, 封板率 50, 溢价 0% -> 50, 晋级率 50% -> 100 (capped), 4 板 -> 3/7.
     parts = {k: day[f"m_{k}"] for k in ("updown", "limit", "seal", "prem", "promo", "height")}
     assert parts == pytest.approx({"updown": 75, "limit": 100, "seal": 50, "prem": 50, "promo": 100, "height": 300 / 7}, abs=0.01)
@@ -1589,9 +1699,10 @@ def test_breadth_verdict_judges_each_state_by_its_own_past_only(monkeypatch):
         "mcl_sum": np.cumsum(rng.normal(0, 50, 260)), "mcl_osc": rng.normal(0, 40, 260),
         "thrust": rng.uniform(0.3, 0.7, 260), "thrust_signal": False,
         "adr10": rng.uniform(0.5, 1.5, 260), "adr10_rank": rng.uniform(0, 100, 260),
-        "trin_amt10": rng.uniform(0.5, 1.2, 260), "trin_amt10_rank": rng.uniform(0, 100, 260)}, index=days)
+        "trin_amt10": rng.uniform(0.5, 1.2, 260), "trin_amt10_rank": rng.uniform(0, 100, 260),
+        "up_pct": rng.uniform(5, 90, 260), "trin_amt": rng.uniform(0.2, 1.8, 260), "trin_vol": rng.uniform(0.2, 1.8, 260)}, index=days)
     up = rng.integers(1000, 4000, 260)
-    stats = pd.DataFrame({"date": days, "up": up, "down": 5000 - up})
+    stats = pd.DataFrame({"date": days, "up": up, "down": 5000 - up, "flat": 50, "limit_up": 30, "limit_down": 20})
     idx = pd.Series(3000 * np.cumprod(1 + rng.normal(0, 0.01, 260)), index=days)
     monkeypatch.setattr(market, "_days_on_record", lambda end: [d for d in days if not end or d <= end])
 
@@ -1607,6 +1718,18 @@ def test_breadth_verdict_judges_each_state_by_its_own_past_only(monkeypatch):
         assert r["lean"] in {"偏多", "短期偏多", "中性", "短期偏空", "偏空", "无数据"} and "基准" in r["reason"]
     assert v["conclusion"]["short_word"] and v["conclusion"]["watch"] and v["conclusion"]["summary"].startswith("短期（5 日）")
     assert [p[0] for p in v["conclusion"]["points"]] == ["①", "②", "③"], "one line a step"
+    assert len(v["structure"]["rows"]) == 10 and sum(r["today"] for r in v["structure"]["rows"]) <= 1
+    rd = v["structure"]["readings"]
+    assert (rd["up"] + rd["down"], rd["flat"], rd["adl_day"]) == (5000, 50, rd["up"] - rd["down"])
+    assert (rd["limit_up"], rd["limit_down"]) == (30, 20) and rd["up_amt_pct"] is None, "no amount shares in this table"
+
+    # 当日市场结构 day by day, the newest first, as many days as asked for.
+    sd = bv.structure_days(days[230], "10d", table=table, stats=stats)
+    assert [x["date"] for x in sd["days"]] == days[221:231][::-1]
+    assert sd["days"][0]["limit_up"] == 30 and sd["days"][0]["up"] + sd["days"][0]["down"] == 5000
+    assert len(bv.structure_days(days[230], "1d", table=table, stats=stats)["days"]) == 1
+    with pytest.raises(ValueError):
+        bv.structure_days(None, "5d", table=table, stats=stats)
 
     # The history: each day the card's reading as it would have been then, and how it went.
     h = bv.history(days[230], "60d", table=table, stats=stats, idx=idx)
@@ -1632,3 +1755,28 @@ def test_breadth_verdict_leans():
     base = {"up5": 55.0, "up20": 58.0}
     lean = lambda u5, u20: bv._lean({"days": 50, "up5": u5, "up20": u20}, base)[0]  # noqa: E731
     assert (lean(62, 66), lean(48, 50), lean(62, 58), lean(48, 60), lean(56, 59)) == ("偏多", "偏空", "短期偏多", "短期偏空", "中性")
+
+
+def test_market_structure_states():
+    import pandas as pd
+
+    from web.server import breadth_verdict as bv
+
+    # 涨家占比, TRIN_额, its rise off the 3 days' low, MCL -> the state
+    cases = [(70, 0.9, 0.0, 10, "broad_up_strong"), (70, 0.9, 0.0, -10, "broad_up_rebound"), (70, 1.5, 0.0, 10, "fake_up"),
+             (15, 0.46, 0.0, -5, "cluster_hold"), (20, 0.81, 0.35, -36, "cluster_break"), (20, 0.95, 0.05, -36, "broad_down"),
+             (10, 1.6, 0.0, -50, "panic"), (50, 0.6, 0.0, 0, "mixed_cluster"), (50, 1.0, 0.0, 0, "mixed"),
+             (50, 1.4, 0.0, 0, "mixed_out"), (None, 0.5, 0.0, 0, "")]
+    up, trin, rise, mcl, want = zip(*cases, strict=False)
+    got = bv.structure_states(pd.Series(up, dtype=float), pd.Series(trin), pd.Series(rise), pd.Series(mcl))
+    assert got.tolist() == list(want)
+    assert {k for k, *_ in bv.STRUCTURES} == set(want) - {""}, "every state has a rule and a meaning"
+
+
+def test_the_store_has_a_monthly_cache_key(monkeypatch):
+    import datetime as dt
+
+    from tradingagents.dataflows.vendors.akshare import store
+
+    monkeypatch.setattr(store, "last_closed_trade_date", lambda now=None: dt.date(2026, 11, 20))
+    assert store._key("monthly") == ("2026M11", False)

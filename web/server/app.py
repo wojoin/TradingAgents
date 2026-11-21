@@ -21,6 +21,7 @@
   GET  /api/market/concepts/{name}/stocks  ?date=: a concept's stocks (Eastmoney's board of that name, kept locally)
   GET  /api/market/forecasts           ?date=&period=: a report period's 业绩预告 by type and industry
   GET  /api/market/breadth/verdict     ?date=: 市场广度综合研判, each indicator judged by its own history
+  GET  /api/market/breadth/structure   ?range=1d|10d|30d|60d|6m&end=: 当日市场结构 day by day
   GET  /api/market/breadth/verdict/history  ?range=&end=: that reading on each day of a span, and how it went
   GET  /api/market/breadth             ?range=&end=: 涨停溢价 and 晋级率, size styles, new highs and lows, share above MAs
   GET/POST /api/market/sync             the snapshot sync for days not on disk yet: its status, or start it
@@ -180,6 +181,16 @@ def create_app(manager: RunManager | None = None, reports_root: Path | None = No
         except FileNotFoundError as e:
             raise HTTPException(404, str(e)) from e
 
+    @app.get("/api/market/breadth/structure")
+    def market_breadth_structure(range: str = Query("10d"),  # noqa: A002
+                                 end: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
+        try:
+            return breadth_verdict.structure_days(end, range)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        except FileNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+
     @app.get("/api/market/breadth/verdict/history")
     def market_breadth_verdict_history(range: str = Query("6m"),  # noqa: A002
                                        end: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):
@@ -324,6 +335,36 @@ def create_app(manager: RunManager | None = None, reports_root: Path | None = No
             raise HTTPException(404, str(e)) from e
         except FileNotFoundError as e:
             raise HTTPException(502, str(e)) from e
+
+    @app.get("/api/market/sw3")
+    def market_sw3():
+        """The 申万三级 set's state: built, building (n of m industries read) or failed."""
+        from web.server import sw3
+        return sw3.status()
+
+    @app.post("/api/market/sw3")
+    def market_sw3_download():
+        """Download the 申万三级 set now, in the background (by hand)."""
+        from web.server import sw3
+        sw3.ensure(force=True)
+        return sw3.status()
+
+    @app.get("/api/market/sw-class")
+    def market_sw_class():
+        """申万's classification files kept locally: when published, checked and changed."""
+        from web.server import sw_class
+        return sw_class.status()
+
+    @app.post("/api/market/sw-class/import")
+    def market_sw_class_import(since: float = Query(0, ge=0)):
+        """Copy the 申万 stock file the browser saved to ~/Downloads after ``since`` (epoch
+        seconds) here, when it differs from the one kept; the market tables are rebuilt."""
+        from web.server import sw_class
+        out = sw_class.import_downloads(since)
+        if out.get("changed"):
+            market.industries.cache_clear()
+            market.invalidate()
+        return {**out, "status": sw_class.status()}
 
     @app.get("/api/market")
     def market_table(date: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")):

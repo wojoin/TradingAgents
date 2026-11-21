@@ -4,7 +4,8 @@
 // up from them. A summary of history, not a forecast.
 import { computed, ref, watch } from 'vue'
 import Select from 'primevue/select'
-import { api, type BreadthVerdict, type StatsRange, type VerdictDay, type VerdictHistory } from '../api'
+import SelectButton from 'primevue/selectbutton'
+import { api, type BreadthVerdict, type StatsRange, type StructureDay, type StructureDays, type StructureRange, type VerdictDay, type VerdictHistory } from '../api'
 import { rangeRef } from '../statsRange'
 import LineChart, { type Line } from './LineChart.vue'
 
@@ -25,6 +26,88 @@ watch(() => props.date, async (d) => {
     loading.value = false
   }
 }, { immediate: true })
+
+// ---- 当日市场结构, day by day: 项目 down the side, a column a day (the newest first) ----
+const S_RANGES: { value: StructureRange; label: string }[] = [
+  { value: '1d', label: '当日' }, { value: '10d', label: '近10天' }, { value: '30d', label: '近30天' },
+  { value: '60d', label: '近60天' }, { value: '6m', label: '半年' }]
+const sRange = ref<StructureRange>((() => {
+  try {
+    const v = localStorage.getItem('market.structureRange')
+    return (S_RANGES.some((r) => r.value === v) ? v : '10d') as StructureRange
+  } catch {
+    return '10d'
+  }
+})())
+watch(sRange, (v) => {
+  try {
+    localStorage.setItem('market.structureRange', v)
+  } catch {
+    /* storage blocked */
+  }
+})
+const sdays = ref<StructureDays | null>(null)
+const sError = ref('')
+watch([sRange, () => props.date], async ([r, d]) => {
+  if (!d) return
+  sError.value = ''
+  try {
+    const x = await api.breadthStructure(r, d)
+    if (sRange.value === r && props.date === d) sdays.value = x
+  } catch (e) {
+    sError.value = e instanceof Error ? e.message : String(e)
+  }
+}, { immediate: true })
+type Cell = { text: string; cls?: string }
+const num = (v: number | null, d = 2) => (v === null ? '—' : v.toFixed(d))
+const signedPp = (v: number | null) => (v === null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(2)}pp`)
+const tone = (v: number | null) => (v === null || v === 0 ? '' : v > 0 ? 'up' : 'down')
+const S_ROWS: { label: string; cell: (d: StructureDay) => Cell | Cell[] }[] = [
+  { label: '涨/跌/平', cell: (d) => [{ text: `${d.up ?? '—'}`, cls: 'up' }, { text: '/' }, { text: `${d.down ?? '—'}`, cls: 'down' }, { text: `/${d.flat ?? '—'}` }] },
+  { label: '涨停/跌停', cell: (d) => [{ text: `${d.limit_up ?? '—'}`, cls: 'up' }, { text: '/' }, { text: `${d.limit_down ?? '—'}`, cls: 'down' }] },
+  { label: 'ADL', cell: (d) => ({ text: d.adl_day === null ? '—' : `${d.adl_day > 0 ? '+' : ''}${d.adl_day}`, cls: tone(d.adl_day) }) },
+  { label: '涨家占比', cell: (d) => ({ text: d.up_pct === null ? '—' : `${d.up_pct.toFixed(2)}%` }) },
+  { label: '涨额占比', cell: (d) => ({ text: d.up_amt_pct === null ? '—' : `${d.up_amt_pct.toFixed(2)}%` }) },
+  { label: '额价差', cell: (d) => ({ text: signedPp(d.amt_gap), cls: tone(d.amt_gap) }) },
+  { label: '量价差', cell: (d) => ({ text: signedPp(d.vol_gap), cls: tone(d.vol_gap) }) },
+  { label: 'MCL', cell: (d) => ({ text: num(d.mcl, 1), cls: tone(d.mcl) }) },
+  { label: 'TRIN_额', cell: (d) => ({ text: num(d.trin_amt), cls: d.trin_amt === null ? '' : d.trin_amt < 1 ? 'up' : 'down' }) },
+  { label: 'TRIN_量', cell: (d) => ({ text: num(d.trin_vol), cls: d.trin_vol === null ? '' : d.trin_vol < 1 ? 'up' : 'down' }) },
+  { label: '全A成交额', cell: (d) => ({ text: d.amount === null ? '—' : d.amount >= 1e12 ? `${(d.amount / 1e12).toFixed(2)}万亿` : `${(d.amount / 1e8).toFixed(0)}亿` }) },
+  { label: '结论', cell: (d) => ({ text: d.structure_label ?? '—', cls: 'verdict-cell' }) },
+]
+const cells = (c: Cell | Cell[]) => (Array.isArray(c) ? c : [c])
+// The structures placed along one market cycle, as a sine: the rising leg positive, the falling
+// leg negative, the two turns at 0 —
+//   恐慌普跌 0 (the trough's turn) → 普涨反弹 +3 → 分化·均衡 +5 → 分化·资金集中 +4 → 普涨 +2 →
+//   虚涨 0 (the peak's turn) → 分化·资金流出 −3 → 少数股抱团 −5 → 抱团瓦解 −4 → 无差别下跌 −2 → 恐慌普跌.
+// Every structure is drawn as a labelled level, whether or not it happened in the span.
+const CYCLE: [string, number][] = [
+  ['panic', 0], ['broad_up_rebound', 3], ['mixed', 5], ['mixed_cluster', 4], ['broad_up_strong', 2],
+  ['fake_up', 0], ['mixed_out', -3], ['cluster_hold', -5], ['cluster_break', -4], ['broad_down', -2],
+]
+const LEVELS: Record<string, number> = Object.fromEntries(CYCLE)
+const labelOf = (key: string) => data.value?.structure.rows.find((r) => r.key === key)?.label ?? key
+// The levels to draw: one line a value, the structures sharing it (the two turns at 0) named together.
+const levelLines = computed(() => {
+  const byValue = new Map<number, string[]>()
+  for (const [key, v] of CYCLE) byValue.set(v, [...(byValue.get(v) || []), labelOf(key)])
+  // No title inside the chart (it would cover the line): the axis label says it (``levelText``).
+  return [...byValue.entries()].map(([value]) => ({
+    value, title: '',
+    color: value > 0 ? '#f3b4b4' : value < 0 ? '#a7d8bb' : '#c0c6cf',
+  }))
+})
+// The axis and the legend: the structure's name, then its value (分化·均衡 +5); between levels nothing.
+const levelText = (v: number) => {
+  const r = Math.round(v)
+  const names = CYCLE.filter(([, x]) => x === r).map(([k]) => labelOf(k))
+  return Math.abs(v - r) < 0.01 && names.length ? `${names.join(' / ')} ${r > 0 ? '+' : ''}${r}` : ''
+}
+const structureLines = computed<Line[]>(() => {
+  const ds = [...(sdays.value?.days || [])].reverse().filter((d) => d.structure && d.structure in LEVELS)
+  return [{ name: '市场结构', color: '#b45309', points: ds.map((d) => ({ time: d.date, value: LEVELS[d.structure!] })) }]
+})
 
 // ---- 历史研判: the reading on each day of a span, and what followed ----
 const HIST_RANGES: { value: StatsRange; label: string }[] = [{ value: '60d', label: '近60天' }, { value: '6m', label: '半年' }, { value: '1y', label: '一年' }]
@@ -119,6 +202,50 @@ const sp = (v: number | null | undefined) => (v === null || v === undefined ? '�
         </tbody>
       </table>
 
+      <!-- 当日市场结构 -->
+      <div class="struct">
+        <div class="muted small">当日市场结构：腾落线（ADL）× TRIN_额 / TRIN_量 × MCL 组合判断普涨、抱团还是无差别下跌</div>
+        <div class="shead">
+          <SelectButton v-model="sRange" :options="S_RANGES" option-label="label" option-value="value" :allow-empty="false" size="small" />
+          <span class="muted small">表格可左右滑动，「项目」列固定；最新一天在最左</span>
+        </div>
+        <p v-if="sError" class="bad small">{{ sError }}</p>
+        <div v-if="sdays" class="dwrap">
+          <table class="dtable">
+            <thead><tr><th class="item">项目</th><th v-for="d in sdays.days" :key="d.date">{{ d.date }}</th></tr></thead>
+            <tbody>
+              <tr v-for="row in S_ROWS" :key="row.label" :class="{ last: row.label === '结论' }">
+                <th class="item">{{ row.label }}</th>
+                <td v-for="d in sdays.days" :key="d.date" :class="{ hit: row.label === '结论' && d.structure === data.structure.state && d.date === data.date }">
+                  <span v-for="(c, i) in cells(row.cell(d))" :key="i" :class="c.cls">{{ c.text }}</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-if="sdays && sdays.days.length > 1" class="schart">
+          <div class="muted small">结论走势：按一轮周期排列，上升段（恐慌普跌之后）为正、下降段（虚涨之后）为负，两个转折点为 0；每种结论都画有参考线，未出现的也标出</div>
+          <LineChart :lines="structureLines" :format="levelText" :height="300" :levels="levelLines" :range="[-5.6, 5.6]" markers />
+        </div>
+        <table class="stable">
+          <thead><tr><th>市场结构</th><th>判断条件</th><th>含义</th><th class="nr">历史天数</th><th class="nr">后 5 日上涨概率</th><th class="nr">后 20 日上涨概率</th><th class="nr">后 20 日平均</th></tr></thead>
+          <tbody>
+            <tr v-for="r in data.structure.rows" :key="r.key" :class="{ on: r.today }">
+              <td class="name">{{ r.label }}<span v-if="r.today" class="now">今日</span></td>
+              <td class="rule">{{ r.rule }}</td>
+              <td class="meaning">{{ r.meaning }}</td>
+              <td class="nr">{{ r.days }}</td>
+              <td class="nr" :class="r.days >= 10 && (r.up5 ?? 0) >= data.baseline.up5! + 5 ? 'up' : r.days >= 10 && (r.up5 ?? 100) <= data.baseline.up5! - 5 ? 'down' : ''">{{ r.days ? pp(r.up5) : '—' }}</td>
+              <td class="nr" :class="r.days >= 10 && (r.up20 ?? 0) >= data.baseline.up20! + 5 ? 'up' : r.days >= 10 && (r.up20 ?? 100) <= data.baseline.up20! - 5 ? 'down' : ''">{{ r.days ? pp(r.up20) : '—' }}</td>
+              <td class="nr">{{ r.days ? sp(r.avg20) : '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="muted small">ADL 以当日涨家占比衡量（≥ 60% 普涨、≤ 40% 普跌），资金以 TRIN_额 衡量（&lt; 0.8 集中在上涨股、&gt; 1.2 集中在下跌股），
+          TRIN_量 作为印证；普跌中 TRIN_额 从前 3 日低点回升 0.2 以上、进入 0.8–1.2，即「抱团瓦解」，正走向无差别下跌；MCL 区分健康普涨与超跌反弹。
+          上涨概率与基准（{{ pp(data.baseline.up5) }} / {{ pp(data.baseline.up20) }}）相差 5 个百分点以上标红 / 绿；天数少于 10 天的仅供参考。</p>
+      </div>
+
       <!-- What would turn it -->
       <div class="watch">
         <div class="muted small">下一步观察：出现以下信号时，历史上的后市表现</div>
@@ -212,6 +339,29 @@ h3 { margin: 0; font-size: 15px; }
 .tag.bear { background: #e8f5ee; }
 .tag.flat { background: #fff4e5; }
 .watch { margin-top: 12px; }
+.struct { margin-top: 12px; }
+.today { margin: 4px 0 6px; font-size: 13px; line-height: 1.7; font-variant-numeric: tabular-nums; }
+.today .lbl { color: #111827; font-weight: 700; }
+.today .state { color: #b45309; font-size: 14px; }
+.shead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 6px 0; }
+.dwrap { overflow-x: auto; max-width: 100%; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 8px; }
+.dtable { border-collapse: separate; border-spacing: 0; font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.dtable th, .dtable td { padding: 5px 12px; border-bottom: 1px solid #f1f3f6; border-right: 1px solid #f1f3f6; text-align: right; }
+.dtable thead th { background: #f6f7f9; font-weight: 600; }
+.dtable .item { position: sticky; left: 0; z-index: 2; background: #fafbfc; text-align: left; font-weight: 700; color: #111827;
+                box-shadow: inset -1px 0 0 var(--border); }
+.dtable thead .item { z-index: 3; background: #f6f7f9; }
+.dtable tr.last td { font-weight: 600; }
+.dtable .verdict-cell { color: #b45309; }
+.dtable td.hit { background: #fff7e6; }
+.schart { margin: 4px 0 10px; }
+.stable { width: 100%; border-collapse: collapse; font-size: 12.5px; line-height: 1.55; margin-top: 4px; }
+.stable th, .stable td { border: 1px solid var(--border); padding: 5px 8px; vertical-align: middle; text-align: left; }
+.stable th { background: #f6f7f9; font-weight: 600; white-space: nowrap; }
+.stable .name { font-weight: 600; white-space: nowrap; }
+.stable .rule { white-space: nowrap; color: #374151; }
+.stable tr.on td { background: #fff7e6; }
+.now { margin-left: 6px; font-size: 11px; padding: 0 6px; border-radius: 8px; background: #b45309; color: #fff; font-weight: 500; }
 .wtable { margin-top: 4px; }
 .nr { text-align: right !important; font-variant-numeric: tabular-nums; }
 .note { margin: 10px 0 0; line-height: 1.6; }

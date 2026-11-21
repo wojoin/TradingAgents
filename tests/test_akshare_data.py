@@ -297,3 +297,33 @@ def test_merged_months_match_daily_dirs(data):
                                for d in SN.daily_dates()])[SN.COLUMNS]
         pd.testing.assert_frame_equal(SN.load_stock(sym), expected)
     assert len(SN.load_daily("2026-12-01", "2026-12-31")) == len(pd.bdate_range("2026-12-01", "2026-12-31")) * 5
+
+
+def test_symbol_cache_downloads_once_when_threads_ask_together(data):
+    """Analysts running in parallel ask for the same stock: one download, no clash over the
+    temporary file (each writer used to share <symbol>.pkl.tmp, and the second rename failed)."""
+    import threading
+
+    calls = []
+
+    def fetch():
+        calls.append(1)
+        threading.Event().wait(0.2)   # time.sleep is stubbed out here
+        return pd.DataFrame({"Date": ["2026-11-20"], "Close": [1.0]})
+
+    errors, out = [], []
+
+    def ask():
+        try:
+            out.append(S.symbol_cache("ohlcv", "SH688256", fetch))
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=ask) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == [] and len(out) == 4 and len(calls) == 1
+    folder = S.root() / "agent" / "ohlcv"
+    assert (folder / "SH688256.pkl").exists() and not list(folder.glob("*.tmp"))

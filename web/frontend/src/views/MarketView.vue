@@ -10,7 +10,7 @@ import InputIcon from 'primevue/inputicon'
 import Select from 'primevue/select'
 import DatePicker from 'primevue/datepicker'
 import Message from 'primevue/message'
-import { ApiError, api, formatLots, formatPct, formatShares, formatYuan, upDownClass, type MarketCalendar, type MarketRow, type MarketSync, type MarketTable, type NotSynced } from '../api'
+import { ApiError, api, formatLots, formatPct, formatShares, formatYuan, upDownClass, type MarketCalendar, type MarketRow, type MarketSync, type MarketTable, type NotSynced, type SwClassStatus } from '../api'
 import WatchStar from '../components/WatchStar.vue'
 import StockMenu from '../components/StockMenu.vue'
 import MarketStats from '../components/MarketStats.vue'
@@ -43,11 +43,107 @@ const filters = ref({
   global: { value: null as string | null, matchMode: 'contains' },
 })
 
-const industries = computed(() =>
-  [...new Set((table.value?.rows || []).map((r) => r.industry).filter((x): x is string => !!x))].sort((a, b) =>
-    a.localeCompare(b, 'zh-CN'),
-  ),
-)
+// 申万一级 → 二级 → 三级, cascading: each list holds what lies under the level above it, and
+// picking a lower level fills in the levels above it.
+const industry2 = ref<string | null>(null)
+const industry3 = ref<string | null>(null)
+const names = (xs: (string | null)[]) =>
+  [...new Set(xs.filter((x): x is string => !!x))].sort((a, b) => a.localeCompare(b, 'zh-CN'))
+const allRows = computed(() => table.value?.rows || [])
+const industries = computed(() => names(allRows.value.map((r) => r.industry)))
+const industries2 = computed(() =>
+  names(allRows.value.filter((r) => !industry.value || r.industry === industry.value).map((r) => r.sub_industry)))
+const industries3 = computed(() =>
+  names(allRows.value.filter((r) => (!industry.value || r.industry === industry.value)
+    && (!industry2.value || r.sub_industry === industry2.value)).map((r) => r.industry3)))
+watch(industry, () => {
+  if (industry2.value && !industries2.value.includes(industry2.value)) industry2.value = null
+  if (industry3.value && !industries3.value.includes(industry3.value)) industry3.value = null
+})
+watch(industry2, (v) => {
+  const r = v ? allRows.value.find((x) => x.sub_industry === v) : null
+  if (r && r.industry !== industry.value) industry.value = r.industry
+  if (industry3.value && !industries3.value.includes(industry3.value)) industry3.value = null
+})
+watch(industry3, (v) => {
+  const r = v ? allRows.value.find((x) => x.industry3 === v) : null
+  if (!r) return
+  if (r.industry !== industry.value) industry.value = r.industry
+  if (r.sub_industry !== industry2.value) industry2.value = r.sub_industry
+})
+// The most specific industry picked, for the count beside the date.
+const picked3 = computed(() => industry3.value || industry2.value || industry.value)
+// 三级行业 comes from 申万's own files kept locally; where they have nothing, from 乐咕乐股's
+// copy (marked so). 乐咕乐股's set downloads by itself only while 申万's files are missing.
+type Sw3 = NonNullable<MarketTable['sw3']>
+const sw3 = ref<Sw3 | null>(null)
+const swc = ref<SwClassStatus | null>(null)
+watch(() => table.value?.sw3, (s) => { if (s) setSw3(s) })
+watch(() => table.value?.sw_class, (s) => { if (s) swc.value = s })
+const lgCount = computed(() => allRows.value.filter((r) => r.industry3_src === 'lg').length)
+const sw3Hint = computed(() => (sw3.value && !swc.value?.ready && !sw3.value.ready && sw3.value.error ? '三级行业暂不可用' : '三级行业'))
+// Tooltip: what 申万 published, when it was last checked and changed, and what changed then.
+const sw3Info = computed(() => {
+  const s = swc.value
+  if (!s?.ready) return '申万官方分类文件尚未同步：三级行业来自乐咕乐股（可能不全）。点右侧按钮下载并同步。'
+  const c = s.last_change
+  return [`申万官方行业分类：数据截至 ${s.as_of || '—'}，${s.checked || '—'} 检查（每月一次，有变动才更新本地缓存）`,
+    s.updated ? `本地缓存最后更新于 ${s.updated}` : '',
+    c ? `${c.date} 变动：新增 ${c.added} 只、剔除 ${c.removed} 只、调整行业 ${c.moved} 只` : '',
+    lgCount.value ? `另有 ${lgCount.value} 只的三级取自乐咕乐股` : ''].filter(Boolean).join('\n')
+})
+let sw3Timer = 0
+function setSw3(st: Sw3) {
+  const was = sw3.value?.building
+  sw3.value = st
+  window.clearTimeout(sw3Timer)
+  if (st.building) sw3Timer = window.setTimeout(checkSw3, 5000)
+  else if (was && st.ready) load(date.value)   // 乐咕乐股's set just finished: the rows carry it
+}
+async function checkSw3() {
+  try {
+    setSw3(await api.marketSw3())
+  } catch {
+    sw3Timer = window.setTimeout(checkSw3, 10000)
+  }
+}
+// 「下载并同步」: 申万's site refuses programs, so the browser fetches the file (to ~/Downloads)
+// and the server, asked every few seconds, copies it in once it lands, when it differs.
+const swSyncing = ref(false)
+const syncMsg = ref<{ text: string; bad?: boolean } | null>(null)
+let syncTimer = 0
+function syncSwClass() {
+  if (!swc.value || swSyncing.value) return
+  const since = Date.now() / 1000 - 5
+  window.open(swc.value.url, '_blank')
+  swSyncing.value = true
+  syncMsg.value = { text: `浏览器下载中，下载完成后自动同步（查找 ${swc.value.downloads} 中的 StockClassifyUse_stock.xls）……` }
+  const until = Date.now() + 3 * 60 * 1000
+  const poll = async () => {
+    try {
+      const r = await api.importSwClass(since)
+      swc.value = r.status
+      if (r.found) {
+        swSyncing.value = false
+        if (r.changed) {
+          const d = r.diff
+          syncMsg.value = { text: `已同步申万行业分类（数据截至 ${r.as_of}）${d ? `：新增 ${d.added} 只、剔除 ${d.removed} 只、调整行业 ${d.moved} 只` : ''}` }
+          load(date.value)
+        } else {
+          syncMsg.value = { text: `已检查：申万行业分类（数据截至 ${r.as_of}）与本地一致，无需更新` }
+        }
+        return
+      }
+    } catch { /* try again */ }
+    if (Date.now() > until) {
+      swSyncing.value = false
+      syncMsg.value = { bad: true, text: `3 分钟内没在 ${swc.value?.downloads} 找到新下载的 StockClassifyUse_stock.xls：请确认浏览器的下载位置，下载后再点一次按钮` }
+      return
+    }
+    syncTimer = window.setTimeout(poll, 3000)
+  }
+  syncTimer = window.setTimeout(poll, 3000)
+}
 // The universe: all A-shares, by exchange, the CSI 300, or ST stocks; remembered in this browser.
 type Universe = 'all' | 'shsz' | 'hs300' | 'sh' | 'sz' | 'bj' | 'st'
 const UNIVERSES: { value: Universe; label: string }[] = [
@@ -101,12 +197,14 @@ function inUniverse(r: MarketRow): boolean {
 
 const rows = computed(() => {
   const all = (table.value?.rows || []).filter(inUniverse)
+  if (industry3.value) return all.filter((r) => r.industry3 === industry3.value)
+  if (industry2.value) return all.filter((r) => r.sub_industry === industry2.value)
   return industry.value ? all.filter((r) => r.industry === industry.value) : all
 })
 // The day's count of stocks and of rises, falls and unchanged: the whole market, or the
 // chosen industry when one is picked.
 const breadth = computed(() => {
-  if (!industry.value && universe.value === 'all' && table.value?.breadth) return table.value.breadth
+  if (!picked3.value && universe.value === 'all' && table.value?.breadth) return table.value.breadth
   const r = rows.value
   const up = r.filter((x) => (x.pct_chg ?? 0) > 0).length
   const down = r.filter((x) => (x.pct_chg ?? 0) < 0).length
@@ -183,10 +281,12 @@ async function done() {
   if (day) load(day)
 }
 
-onBeforeUnmount(() => window.clearTimeout(pollTimer))
+onBeforeUnmount(() => { window.clearTimeout(pollTimer); window.clearTimeout(sw3Timer); window.clearTimeout(syncTimer) })
 
 // An industry picked under the table: filter the table to it and go back up to it.
 function showIndustry(name: string) {
+  industry2.value = null
+  industry3.value = null
   industry.value = name
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
@@ -197,6 +297,8 @@ function pick(d: Date | Date[] | (Date | null)[] | null | undefined) {
 
 onMounted(async () => {
   if (universe.value === 'hs300') loadHs300()
+  checkSw3()
+  api.swClass().then((s) => { swc.value = s }).catch(() => {})
   // Open on the latest closed trading day, synced first when it is not on disk yet.
   cal.value = await api.marketCalendar().catch(() => null)
   load(cal.value?.max || undefined)
@@ -234,8 +336,8 @@ onMounted(async () => {
           scrollable
           scroll-height="flex"
           :virtual-scroller-options="{ itemSize: ROW_HEIGHT }"
-          table-style="table-layout: fixed; min-width: 2036px"
-          :global-filter-fields="['code', 'name', 'industry', 'sub_industry']"
+          table-style="table-layout: fixed; min-width: 2276px"
+          :global-filter-fields="['code', 'name', 'industry', 'sub_industry', 'industry3']"
           :export-filename="`a-share-market-${date}`"
           striped-rows
           size="small"
@@ -255,13 +357,20 @@ onMounted(async () => {
                             @update:model-value="pick" />
                 <span v-if="loading" class="muted small"><i class="pi pi-spin pi-spinner" /> 载入中（历史日期首次约需数秒）</span>
                 <span v-else-if="table" class="muted">
-                  {{ industry ? `${industry} ` : '' }}共 {{ breadth.total }} 只 · <span class="up">涨 {{ breadth.up }}</span> ·
+                  {{ picked3 ? `${picked3} ` : '' }}共 {{ breadth.total }} 只 · <span class="up">涨 {{ breadth.up }}</span> ·
                   <span class="down">跌 {{ breadth.down }}</span> · 平 {{ breadth.flat }}
                 </span>
                 <span v-if="table?.ttm" class="muted small">TTM：{{ table.ttm }}</span>
               </div>
               <div class="row">
-                <Select v-model="industry" :options="industries" placeholder="全部行业" show-clear filter class="industry" />
+                <Select v-model="industry" :options="industries" placeholder="一级行业" show-clear filter class="industry" />
+                <Select v-model="industry2" :options="industries2" placeholder="二级行业" show-clear filter class="industry" />
+                <Select v-model="industry3" :options="industries3" :placeholder="sw3Hint" show-clear filter class="industry"
+                        :disabled="!industries3.length" :title="sw3Info" />
+                <Button :title="`${sw3Info}\n\n点此在浏览器下载申万最新的个股行业分类表，并同步到本地`"
+                        :icon="swSyncing ? 'pi pi-spin pi-spinner' : 'pi pi-sync'" severity="secondary" text rounded
+                        :disabled="swSyncing || !swc" aria-label="下载并同步申万行业分类" @click="syncSwClass" />
+                <span v-if="sw3?.building" class="muted small sw3">三级行业下载中 {{ sw3.done }}/{{ sw3.total || '…' }}</span>
                 <IconField>
                   <InputIcon class="pi pi-search" />
                   <InputText v-model="filters.global.value" placeholder="代码、名称或行业" />
@@ -269,7 +378,14 @@ onMounted(async () => {
                 <Button label="导出 CSV" icon="pi pi-file-export" severity="secondary" outlined @click="dt?.exportCSV()" />
               </div>
             </div>
-
+            <div v-if="syncMsg || (swc && (!swc.ready || swc.due)) || lgCount" class="swnote small">
+              <span v-if="syncMsg" :class="syncMsg.bad ? 'warn' : 'muted'">{{ syncMsg.text }}</span>
+              <template v-else>
+                <span v-if="swc && !swc.ready" class="warn"><i class="pi pi-info-circle" /> 三级行业来自乐咕乐股（非申万官方，可能不全）；点三级行业旁的 <i class="pi pi-sync" /> 下载并同步申万官方分类。</span>
+                <span v-else-if="lgCount" class="warn"><i class="pi pi-info-circle" /> {{ lgCount }} 只股票的三级行业来自乐咕乐股（申万官方文件中没有）。</span>
+                <span v-if="swc?.ready && swc.due" class="muted">申万行业分类已一个月未检查（数据截至 {{ swc.as_of }}），可点 <i class="pi pi-sync" /> 更新。</span>
+              </template>
+            </div>
           </template>
           <template #empty><span class="muted">没有匹配的股票</span></template>
           <!-- The row's position as shown, after sorting and filtering: 1, 2, 3 ... from the top. -->
@@ -318,8 +434,17 @@ onMounted(async () => {
           <Column field="amplitude" header="振幅" sortable header-class="nr" body-class="nr" style="width: 84px">
             <template #body="{ data }">{{ formatPct(data.amplitude, false) }}</template>
           </Column>
-          <Column field="industry" header="所属行业" sortable header-class="txt" body-class="txt" style="width: 100px">
-            <template #body="{ data }"><span :title="data.sub_industry || ''">{{ data.industry || '—' }}</span></template>
+          <!-- 申万一级 / 二级 / 三级, each sortable; a long name is cut and shown whole on hover. -->
+          <Column field="industry" header="一级行业" sortable header-class="txt" body-class="txt ind" style="width: 90px">
+            <template #body="{ data }"><span :title="data.industry || ''">{{ data.industry || '—' }}</span></template>
+          </Column>
+          <Column field="sub_industry" header="二级行业" sortable header-class="txt" body-class="txt ind" style="width: 110px">
+            <template #body="{ data }"><span :title="data.sub_industry || ''">{{ data.sub_industry || '—' }}</span></template>
+          </Column>
+          <Column field="industry3" header="三级行业" sortable header-class="txt" body-class="txt ind" style="width: 140px">
+            <template #body="{ data }">
+              <span :title="data.industry3 ? `${data.industry3}${data.industry3_src === 'lg' ? '（来自乐咕乐股，非申万官方文件）' : ''}` : ''">{{ data.industry3 || '—' }}<sup v-if="data.industry3_src === 'lg'" class="lg">乐</sup></span>
+            </template>
           </Column>
           <Column field="turnover" header="换手率%" sortable header-class="nr" body-class="nr" style="width: 84px">
             <template #body="{ data }">{{ fix(data.turnover) }}</template>
@@ -378,7 +503,12 @@ onMounted(async () => {
 }
 .between { justify-content: space-between; width: 100%; }
 .date { width: 160px; }
-.industry { width: 170px; }
+.industry { width: 150px; }
+.sw3 { white-space: nowrap; font-variant-numeric: tabular-nums; }
+:deep(.market td.ind) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lg { color: #b45309; font-size: 10px; margin-left: 1px; }
+.swnote { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.swnote .warn { color: #b45309; }
 .note { margin-top: 8px; font-size: 12px; }
 .bottom { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 12px; padding-top: 8px; border-top: 1px solid var(--border); }
 .universe { width: 130px; }
