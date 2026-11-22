@@ -7,7 +7,7 @@ import { computed, ref, watch } from 'vue'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import SelectButton from 'primevue/selectbutton'
-import { api, type EtfBroad, type EtfRange } from '../api'
+import { api, type EtfBroad, type EtfDay, type EtfRange } from '../api'
 import LineChart, { type Line } from '../components/LineChart.vue'
 
 const UP = '#e5484d'
@@ -77,6 +77,10 @@ const changeLines = computed<Line[]>(() => [{
   name: '份额变化', color: UP, bars: true,
   points: days.value.flatMap((d) => (d.change === null ? [] : [{ time: d.date, value: d.change, color: d.change >= 0 ? UP : DOWN }])),
 }])
+// The day's change against the day before's total shares, in %.
+const changePct = (d: EtfDay | undefined) =>
+  !d || d.change === null || d.total === d.change ? null : (d.change / (d.total - d.change)) * 100
+const signedPct = (v: number) => `${v > 0 ? '+' : ''}${v.toFixed(2)}%`
 const indexLines = computed<Line[]>(() => [
   { name: '加仓指数', color: '#2563eb', points: days.value.map((d) => ({ time: d.date, value: d.index })) },
 ])
@@ -144,7 +148,11 @@ const cls = (v: number | null | undefined) => (!v ? '' : v > 0 ? 'up' : 'down')
 
       <section class="card">
         <h3>每日份额变化 <span class="muted small">{{ data.funds.length }} 只合计，亿份（原始数据，噪声大）</span></h3>
-        <LineChart :lines="changeLines" :format="yi" :height="200" :sync="hovered" @hover="hovered = $event" />
+        <LineChart :lines="changeLines" :format="yi" :height="200" :sync="hovered" @hover="hovered = $event">
+          <template #legend="{ day }">
+            <span v-if="day && changePct(byDate.get(day)) !== null" :class="cls(byDate.get(day)!.change)">（{{ signedPct(changePct(byDate.get(day))!) }}）</span>
+          </template>
+        </LineChart>
         <p v-if="shown?.top.length" class="small movers">
           <span class="muted">{{ shown.date }} 变化最大：</span>
           <span v-for="[code, v] in shown.top" :key="code">{{ names.get(code) || code }}
