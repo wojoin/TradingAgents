@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Changes that need action when upgrading are listed under "Upgrading from" in their release.
 
+## [Unreleased]
+
+### Added
+
+- **The margin balance's trend.** The sentiment analyst's market temperature reads the two-financing balance's 20-day slope and the last 5 days against it, so leverage that is speeding up, slowing or reversing reads differently from a single day's change.
+- **Policy events.** A dated list of measures that change a rule the market trades on (融资保证金比例, 印花税, 降准降息, 汇金增持) is shown alongside the margin balance, with the parameter before and after, and whether it bears on the analyzed stock's 申万 industry. An event appears only from its announcement date, never before, and a run dated earlier cannot see it.
+
 ## [0.7.1] — 2026-10-27
 
 Decisions are scored only on final closes and settle across long market holidays, a model's unpadded date no longer reads filings made after the run date, and fixes to portfolios, prices, SEC statements, reports, Azure and Claude settings.
