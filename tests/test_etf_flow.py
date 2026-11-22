@@ -32,6 +32,15 @@ def wide(rows: dict) -> pd.DataFrame:
 
 # --- compute -------------------------------------------------------------------------------------
 
+def test_top_movers_stop_once_they_make_half_the_day():
+    d = pd.Series({"A": 50.0, "B": 30.0, "C": 25.0, "D": 20.0, "E": 15.0, "F": 60.0, "G": -10.0, "H": 10.0})
+    assert d.sum() == 200
+    assert etf_flow.top_movers(d) == [["F", 60.0, 30.0], ["A", 50.0, 25.0]], "60 + 50 = 110 ≥ 100"
+    assert [t[0] for t in etf_flow.top_movers(-d)] == ["F", "A"], "a day of redemptions likewise"
+    flat = pd.Series({"A": 5.0, "B": -5.0, "C": 1.0, "D": -0.5})
+    assert etf_flow.top_movers(flat) == [["A", 5.0, None], ["B", -5.0, None], ["C", 1.0, None]]
+
+
 def test_compute_totals_changes_index_and_rates():
     w = wide({f"2026-01-0{i}": {"A": 1e8 * (10 + i), "B": 1e8 * 10} for i in range(1, 8)})
     out = etf_flow.compute(w, "2026-01-01").set_index("date")
@@ -190,11 +199,9 @@ def test_broad_shapes_the_page(cache, monkeypatch):
     assert days["2025-11-20"]["index_change"] is None
     top = days["2026-01-28"]["top"]
     assert top[0][0] == "510310"                                  # the day's biggest mover
-    assert len(top) == 10, "the top half of the 20 funds"
-    assert [abs(t[1]) for t in top] == sorted((abs(t[1]) for t in top), reverse=True)
-    assert all(0 < t[2] <= 100 for t in top) and sum(t[2] for t in top) <= 100.01   # shares of Σ|change|
-    assert top[0][2] == pytest.approx(abs(top[0][1]) / sum(abs(v) for v in (
-        (pd.Series(REAL["2026-01-28"]) - pd.Series(REAL["2026-01-27"])) / 1e8)) * 100, abs=0.01)
+    assert all(t[1] < 0 for t in top), "a day of redemptions: the funds redeemed"
+    assert sum(t[2] for t in top) >= 50 and sum(t[2] for t in top[:-1]) < 50, "just enough for half"
+    assert top[0][2] == pytest.approx(top[0][1] / -329.475 * 100, abs=0.01)
     assert len(out["funds"]) == 20
     hs300 = next(x for x in out["funds"] if x["code"] == "510300")
     assert hs300["since_base"] == pytest.approx((28624087700 - 89383087700) / 1e8)
