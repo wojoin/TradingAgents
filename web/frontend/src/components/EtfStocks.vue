@@ -38,7 +38,32 @@ watch(() => props.date, (d) => {
 }, { immediate: true })
 
 const names = computed(() => new Map((data.value?.funds || []).map((f) => [f.code, f.name])))
-const rows = computed(() => (data.value?.stocks || []).slice(0, all.value ? undefined : SHOW))
+// A stock's share of the day's total (%); none on a day whose total is about nil.
+const ratio = (v: number) => (data.value && Math.abs(data.value.total) >= 0.01 ? (v / data.value.total) * 100 : null)
+const topSum = computed(() => (data.value?.stocks || []).reduce((a, s) => a + s.amount, 0))
+// Sorting by 合计 or 比率: largest first, then smallest first, then back to the size of the amount
+// (the default, either way). Over all the stocks sent, before the first SHOW are cut.
+type SortKey = 'amount' | 'ratio'
+const sortKey = ref<SortKey | null>(null)
+const sortDir = ref(-1)
+function sortBy(k: SortKey) {
+  if (sortKey.value !== k) {
+    sortKey.value = k
+    sortDir.value = -1
+  } else if (sortDir.value < 0) sortDir.value = 1
+  else sortKey.value = null
+}
+const rows = computed(() => {
+  const all_ = [...(data.value?.stocks || [])]
+  const k = sortKey.value
+  if (k) {
+    const val = (x: { amount: number }) => (k === 'amount' ? x.amount : ratio(x.amount) ?? 0)
+    all_.sort((a, b) => (val(a) - val(b)) * sortDir.value)
+  }
+  return all_.slice(0, all.value ? undefined : SHOW)
+})
+const icon = (k: SortKey) => (sortKey.value !== k ? 'pi-sort-alt' : sortDir.value < 0 ? 'pi-sort-amount-down' : 'pi-sort-amount-up')
+const pctText = (v: number | null) => (v === null ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(2)}%`)
 const weightsDates = computed(() => [...new Set((data.value?.funds || []).map((f) => f.weights_date))].join('、'))
 const cls = (v: number) => (v > 0 ? 'up' : v < 0 ? 'down' : 'muted')
 // 亿 to two places, or 万 when under 1亿.
@@ -58,19 +83,24 @@ const money = (v: number) => {
       <p class="small sum">
         {{ data.date }}：20 只 ETF 份额变化折合 <b :class="cls(data.total)">{{ money(data.total) }}元</b>，
         相当于按权重{{ data.total >= 0 ? '买入' : '卖出' }}了 {{ data.count }} 只成分股，下表为金额最大的
-        {{ data.stocks.length }} 只<span v-if="loading" class="muted">（更新中）</span>。
+        {{ data.stocks.length }} 只，合计 <b :class="cls(topSum)">{{ money(topSum) }}元</b>，占
+        <b :class="cls(topSum)">{{ pctText(ratio(topSum)) }}</b><span v-if="loading" class="muted">（更新中）</span>。
         <span class="muted">按 ETF：</span>
         <span v-for="f in data.funds.filter((x) => x.amount)" :key="f.code" class="fund">{{ f.name }}
           <b :class="cls(f.amount)">{{ money(f.amount) }}</b></span>
       </p>
       <table class="tbl">
-        <thead><tr><th>#</th><th>股票</th><th class="r">合计</th><th>来自哪只 ETF</th></tr></thead>
+        <thead><tr><th>#</th><th>股票</th>
+          <th class="r sort" :class="{ on: sortKey === 'amount' }" @click="sortBy('amount')">合计<i class="pi" :class="icon('amount')" /></th>
+          <th class="r sort" :class="{ on: sortKey === 'ratio' }" title="合计 ÷ 20 只 ETF 份额变化折合" @click="sortBy('ratio')">比率<i class="pi" :class="icon('ratio')" /></th>
+          <th>来自哪只 ETF</th></tr></thead>
         <tbody>
           <tr v-for="(s, i) in rows" :key="s.code">
             <td class="muted">{{ i + 1 }}</td>
             <td class="nm"><RouterLink :to="`/stock/${s.code}`" class="link">{{ s.name }}</RouterLink>
               <span class="muted code">{{ s.code }}</span></td>
             <td class="r"><b :class="cls(s.amount)">{{ money(s.amount) }}</b></td>
+            <td class="r" :class="cls(s.amount)">{{ pctText(ratio(s.amount)) }}</td>
             <td class="parts">
               <span v-for="[f, a] in s.parts" :key="f">{{ names.get(f) || f }} <span :class="cls(a)">{{ money(a) }}</span></span>
             </td>
@@ -101,6 +131,9 @@ h4 { margin: 0 0 6px; font-size: 14px; }
 .tbl th { text-align: left; font-weight: 500; color: var(--p-text-muted-color, #6b7785); padding: 4px 6px; border-bottom: 1px solid #e3e7ec; }
 .tbl td { padding: 4px 6px; border-bottom: 1px solid #f1f3f6; vertical-align: top; }
 .r { text-align: right; white-space: nowrap; }
+.sort { cursor: pointer; user-select: none; }
+.sort.on { color: var(--p-text-color, #1f2933); }
+.sort i { font-size: 10px; margin-left: 3px; }
 .nm { white-space: nowrap; }
 .code { margin-left: 4px; font-size: 11px; }
 .parts { line-height: 1.6; }
