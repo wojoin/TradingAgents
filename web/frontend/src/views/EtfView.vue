@@ -10,6 +10,7 @@ import SelectButton from 'primevue/selectbutton'
 import { api, type EtfBroad, type EtfDay, type EtfRange } from '../api'
 import LineChart, { type Line } from '../components/LineChart.vue'
 import EtfStocks from '../components/EtfStocks.vue'
+import EtfHoldings from '../components/EtfHoldings.vue'
 
 const UP = '#e5484d'
 const DOWN = '#1f9d55'
@@ -92,6 +93,7 @@ const rateLines = computed<Line[]>(() => [
 ])
 
 const hovered = ref<string | null>(null)
+const expanded = ref<Record<string, boolean>>({})   // the funds whose constituents are open
 // The day the details below follow: the last one hovered, kept when the mouse leaves the charts so
 // they can be read; null is the last day.
 const picked = ref<string | null>(null)
@@ -233,8 +235,10 @@ const cls = (v: number | null | undefined) => (!v ? '' : v > 0 ? 'up' : 'down')
       </section>
 
       <section class="card">
-        <h3>{{ data.funds.length }} 只成分 <span class="muted small">按 {{ data.as_of }} 的规模排序（规模 = 当日份额 × 当日收盘价，每天都在变）；较基期 {{ data.base }}；权重是基期份额占合计的比例，即它在加仓指数里的分量</span></h3>
-        <DataTable :value="data.funds" size="small" sort-field="size" :sort-order="-1" class="num">
+        <h3>{{ data.funds.length }} 只成分 <span class="muted small">按 {{ data.as_of }} 的规模排序（规模 = 当日份额 × 当日收盘价，每天都在变）；较基期 {{ data.base }}；权重是基期份额占合计的比例，即它在加仓指数里的分量；点左侧箭头展开成分股</span></h3>
+        <DataTable v-model:expanded-rows="expanded" :value="data.funds" data-key="code" size="small" sort-field="size"
+                   :sort-order="-1" class="num">
+          <Column expander style="width: 2.5rem" />
           <Column field="code" header="代码" sortable />
           <Column field="name" header="名称" sortable />
           <Column field="exchange" header="市场" sortable>
@@ -258,6 +262,7 @@ const cls = (v: number | null | undefined) => (!v ? '' : v > 0 ? 'up' : 'down')
           <Column field="weight" header="权重%" sortable>
             <template #body="{ data: f }">{{ f.weight.toFixed(1) }}</template>
           </Column>
+          <template #expansion="{ data: f }"><EtfHoldings :code="f.code" /></template>
         </DataTable>
       </section>
     </template>

@@ -765,6 +765,16 @@ export interface EtfStocks {
   stocks: { code: string; name: string; amount: number; parts: [string, number][] }[]
 }
 
+// One fund's constituents: its index's latest weights with the latest quote, TTM P/E and ROE.
+export interface EtfHoldingRow {
+  code: string; name: string; weight: number; price: number | null; pct_chg: number | null; turnover: number | null
+  amount: number | null; pe_ttm: number | null; roe: number | null; total_mv: number | null
+}
+export interface EtfHoldings {
+  fund: string; name: string; index: string; index_name: string; weights_date: string; date: string | null
+  roe_label: string; count: number; rows: EtfHoldingRow[]
+}
+
 export class ApiError extends Error {
   readonly status: number
   readonly detail: unknown
@@ -798,6 +808,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 export const api = {
   etfBroad: (range: EtfRange, base?: string) =>
     request<EtfBroad>(`/api/etf/broad?range=${range}${base ? `&base=${base}` : ''}`),
+  etfHoldings: (code: string) => request<EtfHoldings>(`/api/etf/holdings/${code}`),
   etfStocks: (date?: string) => request<EtfStocks>(`/api/etf/stocks${date ? `?date=${date}` : ''}`),
   options: () => request<Options>('/api/options'),
   startRun: (ticker: string, options?: Partial<RunOptions>) =>

@@ -27,6 +27,7 @@
   GET/POST /api/market/sync             the snapshot sync for days not on disk yet: its status, or start it
   GET  /api/etf/broad                  ?base=&range=6m|1y|all: 宽基ETF, the 20 funds' shares, 加仓指数 and its rate
   GET  /api/etf/stocks                 ?date=: what a day's share changes come to in each stock (亿元)
+  GET  /api/etf/holdings/{code}        one fund's constituents: weight, quote, TTM P/E, ROE, market value
   GET  /api/market/index/{code}/members today's constituents of an index (000300: 沪深300)
   GET  /api/watchlist                   the watchlist's groups and their stocks' rows (?rows=0: groups only)
   POST /api/watchlist/groups            create a group {"name", "color"} (at most 256)
@@ -267,6 +268,10 @@ def create_app(manager: RunManager | None = None, reports_root: Path | None = No
     @app.get("/api/etf/stocks")
     def etf_stocks_day(date: str | None = day_q()):
         return _guard(etf_stocks.implied, date)
+
+    @app.get("/api/etf/holdings/{code}")
+    def etf_holdings(code: str):
+        return _guard(etf_stocks.holdings, code)
 
     @app.get("/api/market/qvix")
     def market_qvix(range: str = Query("1y"), end: str | None = day_q()):  # noqa: A002

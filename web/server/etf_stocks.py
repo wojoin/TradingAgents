@@ -165,3 +165,54 @@ def implied(day: str | None = None, *, wide: pd.DataFrame | None = None, px: pd.
     note = f"缺收盘价或权重，未计入：{'、'.join(missing)}" if missing else None
     return {"date": day, "total": etf_flow._num(sum(f["amount"] for f in funds)), "funds": funds,
             "stocks": stocks, "count": count, "note": note}
+
+
+# --- one fund's constituents ---------------------------------------------------------------------
+
+def roe_latest() -> tuple[pd.Series | None, str]:
+    """(code -> ROE %, what it covers): 净资产收益率 of the store's latest 业绩报表 (the period's
+    year to date, as published, not annualized)."""
+    from tradingagents.dataflows.vendors.akshare import settings as ak_settings
+    files = sorted(ak_settings.data_dir().glob("yjbb__P*.pkl"))
+    if not files:
+        return None, "无业绩数据"
+    period = files[-1].stem.split("__P")[-1]
+    df = pd.read_pickle(files[-1])
+    out = pd.to_numeric(df["净资产收益率"], errors="coerce")
+    out.index = df["股票代码"].astype(str).str.zfill(6)
+    label = {"0331": "一季报", "0630": "半年报", "0930": "三季报", "1231": "年报"}.get(period[4:], period[4:])
+    return out[~out.index.duplicated()], f"{period[:4]} {label}"
+
+
+def holdings(fund: str, *, w: pd.DataFrame | None = None, table: dict | None = None,
+             roe: tuple[pd.Series | None, str] | None = None) -> dict:
+    """A fund's constituents: its index's latest weights, each stock with the latest market table's
+    quote (price, change, turnover, amount, TTM P/E, market value) and ROE, heaviest first.
+
+    ``{fund, name, index, index_name, weights_date, date, roe_label, count, rows: [{code, name,
+    weight, price, pct_chg, turnover, amount, pe_ttm, roe, total_mv}]}``.
+    """
+    if fund not in INDEX:
+        raise FileNotFoundError(f"{fund} 不在 20 只宽基 ETF 中")
+    index, index_name = INDEX[fund]
+    w = weights() if w is None else w
+    mine = w[w["index"] == index]
+    if mine.empty:
+        raise FileNotFoundError(f"{index_name} 的成分股权重还没有下载到")
+    snap = mine[mine["date"] == mine["date"].max()].sort_values("weight", ascending=False)
+    if table is None:
+        from web.server import market
+        table = market.market_table()
+    by_code = {r["code"]: r for r in table["rows"]}
+    roe_s, roe_label = roe_latest() if roe is None else roe
+    rows = []
+    for r in snap.itertuples(index=False):
+        q = by_code.get(r.code, {})
+        v = roe_s.get(r.code) if roe_s is not None else None
+        rows.append({"code": r.code, "name": q.get("name") or r.name, "weight": float(r.weight),
+                     "price": q.get("price"), "pct_chg": q.get("pct_chg"), "turnover": q.get("turnover"),
+                     "amount": q.get("amount"), "pe_ttm": q.get("pe_ttm"), "total_mv": q.get("total_mv"),
+                     "roe": None if v is None or pd.isna(v) else round(float(v), 2)})
+    return {"fund": fund, "name": etf_flow.NAMES[fund], "index": index, "index_name": index_name,
+            "weights_date": snap["date"].iloc[0], "date": table.get("date"), "roe_label": roe_label,
+            "count": len(rows), "rows": rows}
