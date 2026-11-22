@@ -5,9 +5,9 @@
       and P/E against its peers, the industries' valuation percentile and crowding.
       For the market and fundamentals analysts (a tool).
   get_market_temperature(date, symbol)  the market's temperature: 情绪综合分, QVIX, the margin
-      balance, the whole market's valuation and equity risk premium, and the day's limit-up
-      themes (主线题材), with whether this stock was among them. For the sentiment analyst
-      (fetched before it writes).
+      balance (with its trend) and the policy events that changed a rule it trades on, the whole
+      market's valuation and equity risk premium, and the day's limit-up themes (主线题材), with
+      whether this stock was among them. For the sentiment analyst (fetched before it writes).
 
 The web modules (``web.server.*``) are imported lazily, so a checkout without the web app or a
 store without snapshots gives a plain "unavailable" note. Each section stands on its own: one
@@ -16,6 +16,7 @@ source failing leaves the others. Nothing dated after the analysis date is read.
 from __future__ import annotations
 
 import logging
+from datetime import date
 
 import pandas as pd
 
@@ -48,6 +49,53 @@ def _section(out: list[str], title: str, build) -> None:
         lines = [f"(unavailable: {type(e).__name__}: {str(e)[:120]})"]
     if lines:
         out += [f"## {title}", "", *lines, ""]
+
+
+# ---------------------------------------------------------------------------
+# Margin trend
+# ---------------------------------------------------------------------------
+def _slope(s: pd.Series) -> float | None:
+    """Least-squares slope of ``s`` against its position, per step (in ``s``'s own unit)."""
+    v = s.dropna().reset_index(drop=True)
+    if len(v) < 3:
+        return None
+    x = pd.Series(range(len(v)), dtype=float)
+    dx = x - x.mean()
+    denom = float((dx ** 2).sum())
+    return float((dx * (v - v.mean())).sum() / denom) if denom else None
+
+
+def margin_turn(slow: float, fast: float) -> str:
+    """What the last five days say against the last twenty (both 亿/日); the 行情 page uses it too."""
+    eps = max(abs(slow) * 0.05, 0.5)   # a move smaller than 5% of the trend is the same trend
+    if slow > eps and fast <= 0:
+        return "由增转减（去杠杆）"
+    if slow < -eps and fast >= 0:
+        return "由减转增（杠杆回补）"
+    if slow > eps:
+        return "加杠杆加快" if fast > slow else "加杠杆放缓"
+    if slow < -eps:
+        return "去杠杆加快" if fast < slow else "去杠杆放缓"
+    return "基本走平"
+
+
+def margin_trend(tot: pd.Series) -> list[str]:
+    """The slope of a daily margin-balance series and whether leverage is speeding up or turning.
+
+    A single day's change is noise: the 20-day slope says which way the leveraged money is
+    moving and how fast, and the 5-day slope against it says whether that is speeding up,
+    slowing or reversing. A reversal matters most: it is where the 20-day net change and the
+    recent days disagree.
+    """
+    s20, s5 = _slope(tot.tail(20)), _slope(tot.tail(5))
+    if s20 is None:
+        return []
+    slow = s20 / 1e8
+    if s5 is None:
+        return [f"两融趋势: 20 日斜率 {_f(slow, 1, '亿/日', True)}。"]
+    fast = s5 / 1e8
+    return [f"两融趋势: 20 日斜率 {_f(slow, 1, '亿/日', True)}，近 5 日 {_f(fast, 1, '亿/日', True)}，"
+            f"{margin_turn(slow, fast)}。斜率转正且加快 = 杠杆资金在进场；由正转负 = 去杠杆。"]
 
 
 # ---------------------------------------------------------------------------
@@ -176,11 +224,55 @@ def get_market_temperature(curr_date: str, symbol: str | None = None) -> str:
         d = m["days"]
         if not d:
             return []
-        tot = pd.Series([x["total"] for x in d], index=[x["date"] for x in d], dtype=float)
-        chg = lambda n: (tot.iloc[-1] - tot.iloc[-1 - n]) / 1e8 if len(tot) > n else None  # noqa: E731
+        tot = pd.Series([x["total"] for x in d], index=[x["date"] for x in d], dtype=float).dropna()
+        if tot.empty:
+            return []
+
+        def chg(n: int) -> float | None:
+            return (tot.iloc[-1] - tot.iloc[-1 - n]) / 1e8 if len(tot) > n else None
+
+        c20 = chg(20)
+        prev20 = float(tot.iloc[-21]) if len(tot) > 20 else None
+        pct20 = (tot.iloc[-1] - prev20) / prev20 * 100 if prev20 else None
+        mom = f"20 日环比 {_f(pct20, 2, '%', True)}，" if pct20 is not None else ""
         return [f"两融余额 {tot.index[-1]}: {tot.iloc[-1] / 1e12:.3f} 万亿；较 1 日前 {_f(chg(1), 0, '亿', True)}，"
-                f"5 日 {_f(chg(5), 0, '亿', True)}，20 日 {_f(chg(20), 0, '亿', True)}"
-                f"（近一年分位 {_f((tot < tot.iloc[-1]).mean() * 100, 0, '%')}）。杠杆资金持续流出时，反弹多难持续。"]
+                f"5 日 {_f(chg(5), 0, '亿', True)}，20 日 {_f(c20, 0, '亿', True)}"
+                f"（{mom}近一年分位 {_f((tot < tot.iloc[-1]).mean() * 100, 0, '%')}）。"
+                f"杠杆资金持续流出时，反弹多难持续。"] + margin_trend(tot)
+
+    def policy() -> list[str]:
+        from tradingagents.dataflows.policy_events import events_between
+        # by the analysis date, not the last trading day: a measure announced at the weekend
+        # is known to a run dated that weekend, though the quotes are still Friday's.
+        evs = events_between(curr_date)
+        if not evs:
+            return []
+        mine = ""
+        if code:
+            try:
+                ind = market.industries()
+                mine = str(ind.loc[code, "sw1"]) if code in ind.index else ""
+            except Exception as e:  # noqa: BLE001 - the events still read without the stock's industry
+                log.info("industry for %s unavailable: %s", code, e)
+        lines = []
+        for e in evs:
+            if e.effective <= curr_date:
+                state = "已生效"
+            else:
+                state = f"{(date.fromisoformat(e.effective) - date.fromisoformat(curr_date)).days} 天后生效"
+            parts = [f"- {e.effective}（{e.announced} 公布，{state}）【{e.kind}】{e.title}"]
+            if e.params:
+                parts.append("，".join(f"{n} {a} → {b}" for n, a, b in e.params))
+            if e.scope:
+                parts.append(f"范围 {e.scope}")
+            if e.impact:
+                parts.append(e.impact)
+            if e.sectors:
+                parts.append(f"涉及行业 {'、'.join(e.sectors)}")
+            lines.append("；".join(parts) + (" ← 本股所在行业" if mine and mine in e.sectors else ""))
+        lines.append("政策事件只改变资金供给与风险偏好，不改变公司盈利；已公布未生效的，"
+                     "看生效前后两融余额与成交额的实际反应，而不是只看公告本身。")
+        return lines
 
     def valuation() -> list[str]:
         v = sectors.valuation(day)
@@ -217,6 +309,7 @@ def get_market_temperature(curr_date: str, symbol: str | None = None) -> str:
     _section(out, "短线情绪（情绪综合分，近 5 日）", mood)
     _section(out, "波动率", qvix)
     _section(out, "杠杆资金", margin)
+    _section(out, "政策与事件（改变交易规则或资金供给的已公布措施）", policy)
     _section(out, "全市场估值", valuation)
     _section(out, "主线题材", themes)
     out.append("These describe the whole market, not this stock: they set how much risk the market is taking, "

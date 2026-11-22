@@ -17,8 +17,10 @@ import logging
 import threading
 from collections import Counter
 
+import numpy as np
 import pandas as pd
 
+from tradingagents.dataflows.market_context import margin_turn
 from tradingagents.dataflows.vendors.akshare import settings as ak_settings, store
 from web.server import limit_detail, market
 
@@ -42,6 +44,7 @@ def _memo(name: str, build) -> tuple[pd.DataFrame, str | None]:
 # 两融余额
 # ---------------------------------------------------------------------------
 _MARGIN_COLS = ["date", "total", "fin", "fin_buy"]
+MARGIN_FAST, MARGIN_SLOW = 5, 20     # the windows of the 两融 rates: the recent pace against the trend
 
 
 def _margin_history(name: str) -> pd.DataFrame:
@@ -124,15 +127,29 @@ def margin(end: str | None = None, rng: str = "1y", build=None) -> dict:
     dates = df["date"].tolist()
     start = market._range_start(dates[-1], rng, dates)
     part = df[df["date"] >= start]
-    prev = df["total"].shift(1)
-    chg = (df["total"] - prev).loc[part.index]
+    # The range plus the 20 days before it, for the 5 / 20-day changes and slopes on its first days.
+    tot = df["total"].loc[part.index[0] - min(MARGIN_SLOW, part.index[0]):part.index[-1]]
+    chg = {n: (tot - tot.shift(n)).loc[part.index] for n in (1, MARGIN_FAST, MARGIN_SLOW)}
+    slope = {n: tot.rolling(n).apply(_slope, raw=True).loc[part.index] for n in (MARGIN_FAST, MARGIN_SLOW)}
 
     def r(v):
         return None if pd.isna(v) else round(float(v))
-    return {"range": rng, "start": start, "as_of": dates[-1], "note": note,
-            "days": [{"date": d, "total": r(t), "fin": r(f), "fin_buy": r(b), "sh": r(a), "sz": r(z), "chg": r(c)}
-                     for d, t, f, b, a, z, c in zip(part["date"], part["total"], part["fin"], part["fin_buy"],
-                                                    part["sh"], part["sz"], chg, strict=False)]}
+    days = []
+    for i, d in zip(part.index, part["date"], strict=True):
+        s5, s20 = slope[MARGIN_FAST][i], slope[MARGIN_SLOW][i]
+        days.append({"date": d, "total": r(part.at[i, "total"]), "fin": r(part.at[i, "fin"]),
+                     "fin_buy": r(part.at[i, "fin_buy"]), "sh": r(part.at[i, "sh"]), "sz": r(part.at[i, "sz"]),
+                     "chg": r(chg[1][i]), "chg5": r(chg[MARGIN_FAST][i]), "chg20": r(chg[MARGIN_SLOW][i]),
+                     "s5": r(s5), "s20": r(s20),
+                     "trend": None if pd.isna(s5) or pd.isna(s20) else margin_turn(s20 / 1e8, s5 / 1e8)})
+    return {"range": rng, "start": start, "as_of": dates[-1], "note": note, "days": days}
+
+
+def _slope(v) -> float:
+    """Least-squares slope of ``v`` per step: how much the balance moves a day over the window."""
+    x = np.arange(len(v), dtype=float)
+    x -= x.mean()
+    return float((x * (v - v.mean())).sum() / (x ** 2).sum())
 
 
 # ---------------------------------------------------------------------------

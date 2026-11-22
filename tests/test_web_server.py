@@ -1226,6 +1226,28 @@ def test_margin_joins_the_exchanges_and_tops_up_the_history(monkeypatch, tmp_pat
     extras.invalidate()
 
 
+def test_margin_rates_show_whether_leverage_is_speeding_up(monkeypatch):
+    import pandas as pd
+
+    from web.server import extras
+
+    # +2亿 a day for 30 days, then +4亿 a day for 5: the pace is picking up.
+    tot = [2e12 + 2e8 * i for i in range(30)] + [2e12 + 58e8 + 4e8 * i for i in range(1, 6)]
+    dates = [str(d.date()) for d in pd.bdate_range("2026-06-01", periods=len(tot))]
+    df = pd.DataFrame({"date": dates, "total": tot, "fin": tot, "fin_buy": 1.0, "sh": tot, "sz": 0.0})
+    extras.invalidate()
+    m = extras.margin(None, "60d", build=lambda: (df, None))
+    first, steady, last = m["days"][0], m["days"][29], m["days"][-1]
+    assert first["chg5"] is None and first["s5"] is None and first["trend"] is None, "too early for a 5-day rate"
+    assert steady["chg5"] == 10e8 and steady["chg20"] == 40e8
+    assert steady["s5"] == 2e8 and steady["s20"] == 2e8 and steady["trend"] == "加杠杆放缓"
+    assert last["chg5"] == 20e8 and last["s5"] == 4e8 and last["s20"] > 2e8 and last["trend"] == "加杠杆加快"
+    # A later range still reads the days before its start for its first rates.
+    m = extras.margin(None, "1d", build=lambda: (df, None))
+    assert m["days"] == [last]
+    extras.invalidate()
+
+
 def test_themes_count_the_limit_up_reasons_by_day(monkeypatch):
     import pandas as pd
 
@@ -1893,6 +1915,63 @@ def test_market_temperature_marks_the_stocks_own_limit_ups(monkeypatch):
     assert "2026-11-20 涨停（光刻胶+AI芯片）" in text
     earlier = market_context.get_market_temperature("2026-11-19", "688256.SS")
     assert "| 2026-11-20 |" not in earlier and "temperature to 2026-11-19" in earlier   # nothing after the date
+
+
+def test_margin_trend_reads_the_slope_and_a_turn():
+    import pandas as pd
+
+    from tradingagents.dataflows import market_context
+
+    def series(values):
+        return pd.Series([v * 1e8 for v in values], dtype=float, index=[f"d{i}" for i in range(len(values))])
+
+    steady = series([100 + 2 * i for i in range(25)])
+    assert market_context._slope(steady) == pytest.approx(2e8)
+    assert "20 日斜率 +2.0亿/日，近 5 日 +2.0亿/日，加杠杆放缓" in market_context.margin_trend(steady)[0]
+
+    accel = series([100 + i for i in range(20)] + [119 + 4 * i for i in range(1, 6)])
+    assert "加杠杆加快" in market_context.margin_trend(accel)[0]
+
+    turn = series([100 + 2 * i for i in range(20)] + [136, 134, 132, 130, 128])
+    assert "由增转减（去杠杆）" in market_context.margin_trend(turn)[0]
+    assert market_context.margin_trend(series([100, 101])) == []      # too short for a slope
+
+
+def test_policy_events_appear_only_from_their_announcement(monkeypatch):
+    import pandas as pd
+
+    from tradingagents.dataflows import market_context, policy_events
+    from web.server import breadth, extras, limit_detail, market, sectors
+
+    # the new measure is not visible to a run dated before its announcement
+    assert [e.effective for e in policy_events.events_between("2026-11-21")] == []
+    assert [(e.effective, e.announced) for e in policy_events.events_between("2026-11-22")] == [("2026-11-30", "2026-11-22")]
+    assert policy_events.events_between("2027-06-01") == []               # and fades out once it is old
+
+    days = ["2026-11-20", "2026-11-21", "2026-11-22", "2026-11-25"]
+    table = pd.DataFrame({"mood": [34.0] * 4, **{f"m_{k}": [10.0] * 4 for k in breadth.MOOD_PARTS}}, index=days)
+    monkeypatch.setattr(market, "_days_on_record", lambda end: [d for d in days if d <= end])
+    monkeypatch.setattr(market, "industries", lambda: pd.DataFrame(
+        {"sw1": ["非银金融"], "sw2": ["证券Ⅱ"], "sw3": ["证券Ⅲ"]}, index=["600030"]))
+    monkeypatch.setattr(breadth, "_key", lambda: ("k",))
+    monkeypatch.setattr(breadth, "_table", lambda key: table)
+    monkeypatch.setattr(extras, "qvix", lambda end, rng: {"since": "s", "rank": 1, "median": 1.0,
+                                                         "days": [{"date": days[0], "close": 14.8}]})
+    monkeypatch.setattr(extras, "margin", lambda end, rng: {"days": [{"date": d, "total": 2.2e12} for d in days]})
+    monkeypatch.setattr(sectors, "valuation", lambda end: {"days": [
+        {"date": "2005-01-04", "pe": 21.0, "pb": 2.0, "dy": 1.2, "y10": 5.2, "erp": -0.5},
+        {"date": "2026-11-20", "pe": 15.0, "pb": 1.66, "dy": 1.92, "y10": 1.58, "erp": 5.09}]})
+    monkeypatch.setattr(extras, "themes", lambda date, n, top=10: {"date": days[0], "dates": days, "have": days,
+                        "themes": []})
+    monkeypatch.setattr(limit_detail, "details", lambda d: pd.DataFrame())
+
+    assert "## 政策与事件" not in market_context.get_market_temperature("2026-11-21", "600030.SS")
+    text = market_context.get_market_temperature("2026-11-22", "600030.SS")
+    assert "## 政策与事件" in text
+    assert "2026-11-30（2026-11-22 公布，8 天后生效）【两融】" in text
+    assert "融资保证金比例下限 100% → 80%" in text and "← 本股所在行业" in text
+    assert "较 1 日前 +0亿" in text and "两融趋势" in text
+    assert "5 天后生效" in market_context.get_market_temperature("2026-11-25", "600030.SS")
 
 
 def test_the_rebound_endpoint_serves_a_shares_only_and_stops_at_end(env, monkeypatch):

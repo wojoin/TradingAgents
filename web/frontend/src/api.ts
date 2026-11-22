@@ -274,7 +274,12 @@ export interface MarketMargin {
   start: string
   as_of: string
   note: string | null
-  days: { date: string; total: number | null; fin: number | null; fin_buy: number | null; sh: number | null; sz: number | null; chg: number | null }[]
+  // chg5 / chg20: the change over 5 / 20 trading days; s5 / s20: the least-squares slope of the balance
+  // over the last 5 / 20 days (元 a day); trend: what the 5-day slope says against the 20-day one.
+  days: {
+    date: string; total: number | null; fin: number | null; fin_buy: number | null; sh: number | null; sz: number | null
+    chg: number | null; chg5: number | null; chg20: number | null; s5: number | null; s20: number | null; trend: string | null
+  }[]
 }
 
 // 市场广度综合研判: each breadth indicator's state judged by what followed it here.
