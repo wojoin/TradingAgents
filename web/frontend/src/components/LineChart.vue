@@ -12,6 +12,7 @@ export interface Line {
   bars?: boolean          // a bar per day (each may have its own colour) instead of a line
 }
 
+// Slot ``legend`` (one-row legend only): more on the shown day, after the lines' values.
 // ``rows``: line names grouped into legend rows (any line not named goes on a row of its own at
 // the end); without it the legend is one wrapping row.
 // ``levels``: labelled horizontal lines (on the first line's scale), shown whether or not the
@@ -153,6 +154,7 @@ onBeforeUnmount(() => {
       <span class="muted">{{ shownDay || '—' }}</span>
       <span v-for="l in legend" :key="l.name"><i class="dot" :style="{ background: l.color }" />{{ l.name }}
         <b>{{ l.value === null ? '—' : format(l.value) }}</b></span>
+      <slot name="legend" :day="shownDay" />
     </div>
     <div class="plot">
       <div ref="el" :style="{ height: `${height}px` }" />

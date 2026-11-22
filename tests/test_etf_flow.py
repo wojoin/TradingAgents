@@ -48,7 +48,8 @@ def test_compute_reproduces_the_charts_on_real_shares():
     out = etf_flow.compute(wide(REAL), "2025-12-31").set_index("date")
     assert out.loc["2026-01-28", "change"] == pytest.approx(-322.64, abs=0.01)
     assert out.loc["2026-06-12", "index"] == pytest.approx(29.85, abs=0.01)
-    assert out.loc["2026-06-12", "index"] - out.loc["2026-06-11", "index"] == pytest.approx(0.05, abs=0.01)
+    assert out.loc["2026-06-12", "index_change"] == pytest.approx(0.05, abs=0.01)   # 较前日 in the chart: +0.06
+    assert pd.isna(out.loc["2025-12-31", "index_change"])
 
 
 def test_compute_base_falls_back_to_the_last_day_before_it():
@@ -166,6 +167,8 @@ def test_broad_shapes_the_page(cache, monkeypatch):
     assert out["base"] == "2025-12-31" and out["as_of"] == "2026-06-12"
     days = {d["date"]: d for d in out["days"]}
     assert days["2026-01-28"]["change"] == pytest.approx(-322.64, abs=0.01)
+    assert days["2026-01-28"]["index_change"] == pytest.approx(-6.53, abs=0.01)
+    assert days["2025-12-31"]["index_change"] is None
     assert days["2026-01-28"]["top"][0][0] == "510310"            # the day's biggest mover
     assert len(out["funds"]) == 19
     hs300 = next(x for x in out["funds"] if x["code"] == "510300")

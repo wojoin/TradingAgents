@@ -736,7 +736,7 @@ export interface EtfFund {
 }
 export interface EtfDay {
   date: string; total: number; change: number | null; index: number
-  rate5: number | null; rate20: number | null; top: [string, number][]
+  index_change: number | null; rate5: number | null; rate20: number | null; top: [string, number][]
 }
 export interface EtfBroad {
   base: string; range: EtfRange; start: string; as_of: string

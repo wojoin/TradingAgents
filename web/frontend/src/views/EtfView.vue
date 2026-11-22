@@ -59,6 +59,7 @@ watch([range, base], ([r, b]) => {
 }, { immediate: true })
 
 const days = computed(() => data.value?.days || [])
+const byDate = computed(() => new Map(days.value.map((d) => [d.date, d])))
 const names = computed(() => new Map((data.value?.funds || []).map((f) => [f.code, f.name])))
 
 const changeLines = computed<Line[]>(() => [{
@@ -113,7 +114,7 @@ const cls = (v: number | null | undefined) => (!v ? '' : v > 0 ? 'up' : 'down')
         <div>
           截至 <b>{{ data.as_of }}</b>：19 只合计 <b>{{ last?.total.toFixed(2) }}</b> 亿份，较前日
           <b :class="cls(last?.change)">{{ signed(last?.change) }}</b> 亿份；加仓指数 <b>{{ last?.index.toFixed(2) }}</b>
-          （基期 {{ data.base }} = 100），5 日 <b :class="cls(last?.rate5)">{{ signed(last?.rate5) }}</b>、
+          （基期 {{ data.base }} = 100，较前日 <b :class="cls(last?.index_change)">{{ signed(last?.index_change) }}</b>），5 日 <b :class="cls(last?.rate5)">{{ signed(last?.rate5) }}</b>、
           20 日 <b :class="cls(last?.rate20)">{{ signed(last?.rate20) }}</b>。
           <span v-if="low" class="muted">区间最低 {{ low.index.toFixed(2) }}（{{ low.date }}）。</span>
         </div>
@@ -133,7 +134,11 @@ const cls = (v: number | null | undefined) => (!v ? '' : v > 0 ? 'up' : 'down')
 
       <section class="card">
         <h3>加仓指数 <span class="muted small">合计份额 ÷ 基期合计 × 100：大于 100 是基期以来净申购，越低赎回越多</span></h3>
-        <LineChart :lines="indexLines" :format="pts" :height="240" :levels="[{ value: 100, title: '基期 100' }]" />
+        <LineChart :lines="indexLines" :format="pts" :height="240" :levels="[{ value: 100, title: '基期 100' }]">
+          <template #legend="{ day }">
+            <span>较前日 <b :class="cls(byDate.get(day)?.index_change)">{{ signed(byDate.get(day)?.index_change) }}</b></span>
+          </template>
+        </LineChart>
       </section>
 
       <section class="card">

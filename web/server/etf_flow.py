@@ -34,24 +34,24 @@ log = logging.getLogger(__name__)
 
 # (code, name, exchange), in the order of their size.
 FUNDS: list[tuple[str, str, str]] = [
+    ("510050", "上证50ETF华夏", "SH"),
+    ("510180", "上证180ETF华安", "SH"),
+    ("588080", "科创50ETF易方达", "SH"),
+    ("588050", "科创50ETF工银", "SH"),
     ("510300", "沪深300ETF华泰柏瑞", "SH"),
-    ("159915", "创业板ETF易方达", "SZ"),
     ("510310", "沪深300ETF易方达", "SH"),
     ("510330", "沪深300ETF华夏", "SH"),
     ("159919", "沪深300ETF嘉实", "SZ"),
-    ("510500", "中证500ETF南方", "SH"),
-    ("510050", "上证50ETF华夏", "SH"),
-    ("588080", "科创50ETF易方达", "SH"),
-    ("512100", "中证1000ETF南方", "SH"),
-    ("159952", "创业板ETF广发", "SZ"),
-    ("588050", "科创50ETF工银", "SH"),
-    ("560010", "中证1000ETF广发", "SH"),
     ("512500", "中证500ETF华夏", "SH"),
-    ("159845", "中证1000ETF华夏", "SZ"),
+    ("510500", "中证500ETF南方", "SH"),
     ("515800", "中证800ETF汇添富", "SH"),
-    ("159901", "深证100ETF易方达", "SZ"),
-    ("510180", "上证180ETF华安", "SH"),
+    ("512100", "中证1000ETF南方", "SH"),
+    ("159845", "中证1000ETF华夏", "SZ"),
+    ("560010", "中证1000ETF广发", "SH"),
     ("159629", "中证1000ETF富国", "SZ"),
+    ("159915", "创业板ETF易方达", "SZ"),
+    ("159952", "创业板ETF广发", "SZ"),
+    ("159901", "深证100ETF易方达", "SZ"),
     ("510230", "金融ETF国泰", "SH"),
 ]
 SH = [c for c, _, x in FUNDS if x == "SH"]
@@ -197,7 +197,8 @@ def update(days: list[str], *, fetch_sse=fetch_sse, fetch_szse=fetch_szse) -> tu
 # --- the series ----------------------------------------------------------------------------------
 
 def compute(wide: pd.DataFrame, base: str) -> pd.DataFrame:
-    """Per day: ``total`` and ``change`` (亿份), ``index`` (base day = 100), ``rate5`` / ``rate20``."""
+    """Per day: ``total`` and ``change`` (亿份), ``index`` (base day = 100) and
+    ``index_change`` (against the day before), ``rate5`` / ``rate20``."""
     if wide.empty:
         raise ValueError("no shares")
     total = wide.sum(axis=1) / 1e8
@@ -208,7 +209,8 @@ def compute(wide: pd.DataFrame, base: str) -> pd.DataFrame:
         raise ValueError(f"基期 {base} 前后没有份额数据（最近的是 {on[-1]}），请稍后再试或换一个基期")
     index = 100 * total / total[on[-1]]
     out = pd.DataFrame({"date": total.index, "total": total.values, "change": total.diff().values,
-                        "index": index.values, "rate5": index.diff(5).values,
+                        "index": index.values, "index_change": index.diff().values,
+                        "rate5": index.diff(5).values,
                         "rate20": index.diff(20).values})
     out.attrs["base"] = on[-1]
     return out
@@ -244,6 +246,7 @@ def broad(base: str | None = None, rng: str = "1y") -> dict:
         d = diff.loc[r.date].dropna()
         top = d.reindex(d.abs().sort_values(ascending=False).index[:TOP])
         days.append({"date": r.date, "total": _num(r.total), "change": _num(r.change), "index": _num(r.index),
+                     "index_change": _num(r.index_change),
                      "rate5": _num(r.rate5), "rate20": _num(r.rate20),
                      "top": [[c, _num(v)] for c, v in top.items()]})
 
