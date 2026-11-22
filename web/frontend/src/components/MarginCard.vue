@@ -108,7 +108,12 @@ const summary = computed(() => {
           <span v-if="pctOf(byDate.get(day)!.chg, byDate.get(day)!.total) !== null" class="muted">（{{ signedPct(pctOf(byDate.get(day)!.chg, byDate.get(day)!.total)!) }}）</span></span>
       </template>
     </LineChart>
-    <LineChart v-if="data" :lines="changeLines" :format="signedYi" :height="110" :sync="hovered" @hover="hovered = $event" />
+    <LineChart v-if="data" :lines="changeLines" :format="signedYi" :height="110" :sync="hovered" @hover="hovered = $event">
+      <template #legend="{ day }">
+        <span v-if="day && byDate.get(day) && pctOf(byDate.get(day)!.chg, byDate.get(day)!.total) !== null"
+              :class="cls(byDate.get(day)!.chg)">（{{ signedPct(pctOf(byDate.get(day)!.chg, byDate.get(day)!.total)!) }}）</span>
+      </template>
+    </LineChart>
     <template v-if="data && slopeLines[0].points.length">
       <p class="muted small sub">速率：余额每天平均增减多少（最小二乘斜率）。<b>橙线（近5日）在紫线（20日）之上 = 加杠杆在加快或去杠杆在放缓</b>，在其下 = 加杠杆在放缓或去杠杆在加快；穿过 0 轴是方向转变。</p>
       <LineChart :lines="slopeLines" :format="perDay" :height="150" :sync="hovered" @hover="hovered = $event" :levels="[{ value: 0, title: '' }]">

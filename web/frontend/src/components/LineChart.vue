@@ -46,11 +46,12 @@ let series: ISeriesApi<SeriesType>[] = []
 const days = computed(() => props.lines[0]?.points.map((p) => p.time) || [])
 const shownDay = computed(() => hover.value ?? (props.sync && days.value.includes(props.sync) ? props.sync : null)
   ?? days.value[days.value.length - 1] ?? null)
+// A bar's own colour (e.g. red up / green down) goes on its legend dot and value too.
 const legend = computed(() =>
-  props.lines.map((l) => ({
-    name: l.name, color: l.color,
-    value: l.points.find((p) => p.time === shownDay.value)?.value ?? null,
-  })),
+  props.lines.map((l) => {
+    const p = l.points.find((x) => x.time === shownDay.value)
+    return { name: l.name, color: p?.color ?? l.color, valueColor: p?.color, value: p?.value ?? null }
+  }),
 )
 const legendRows = computed(() => {
   const items = legend.value
@@ -184,13 +185,13 @@ onBeforeUnmount(() => {
       <div class="muted">{{ shownDay || '—' }}</div>
       <div v-for="(row, i) in legendRows" :key="i" class="lrow">
         <span v-for="l in row" :key="l.name"><i class="dot" :style="{ background: l.color }" />{{ l.name }}
-          <b>{{ l.value === null ? '—' : format(l.value) }}</b></span>
+          <b :style="l.valueColor ? { color: l.valueColor } : undefined">{{ l.value === null ? '—' : format(l.value) }}</b></span>
       </div>
     </div>
     <div v-else class="legend">
       <span class="muted">{{ shownDay || '—' }}</span>
       <span v-for="l in legend" :key="l.name"><i class="dot" :style="{ background: l.color }" />{{ l.name }}
-        <b>{{ l.value === null ? '—' : format(l.value) }}</b></span>
+        <b :style="l.valueColor ? { color: l.valueColor } : undefined">{{ l.value === null ? '—' : format(l.value) }}</b></span>
       <slot name="legend" :day="shownDay" />
     </div>
     <div class="plot">
