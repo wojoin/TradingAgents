@@ -56,6 +56,7 @@ const trendCls = (t: string | null | undefined) =>
   !t ? '' : /加杠杆加快|由减转增|去杠杆放缓/.test(t) ? 'up' : /走平/.test(t) ? '' : 'down'
 const pctOf = (chg: number | null, total: number | null) =>
   chg === null || total === null || total === chg ? null : (chg / (total - chg)) * 100
+const signedPct = (v: number) => `${v > 0 ? '+' : ''}${v.toFixed(2)}%`
 const rates = computed(() => {
   const d = days.value[days.value.length - 1]
   if (!d) return []
@@ -100,7 +101,12 @@ const summary = computed(() => {
     </div>
     <p class="muted small sub">融资（借钱买股）加融券（借股卖出）的未还余额，反映杠杆资金的多少。余额持续增加说明加杠杆做多，单日大幅减少常是去杠杆、被动平仓，与指数同向放大波动。
       <span v-if="data?.note" class="bad">{{ data.note }}</span></p>
-    <LineChart v-if="data" :lines="balanceLines" :format="yi" :height="160" />
+    <LineChart v-if="data" :lines="balanceLines" :format="yi" :height="160">
+      <template #legend="{ day }">
+        <span v-if="day && byDate.get(day)" class="small">较前日 <b :class="cls(byDate.get(day)!.chg)">{{ signedYi(byDate.get(day)!.chg) }}</b>
+          <span v-if="pctOf(byDate.get(day)!.chg, byDate.get(day)!.total) !== null" class="muted">（{{ signedPct(pctOf(byDate.get(day)!.chg, byDate.get(day)!.total)!) }}）</span></span>
+      </template>
+    </LineChart>
     <LineChart v-if="data" :lines="changeLines" :format="signedYi" :height="110" />
     <template v-if="data && slopeLines[0].points.length">
       <p class="muted small sub">速率：余额每天平均增减多少（最小二乘斜率）。<b>橙线（近5日）在紫线（20日）之上 = 加杠杆在加快或去杠杆在放缓</b>，在其下 = 加杠杆在放缓或去杠杆在加快；穿过 0 轴是方向转变。</p>
