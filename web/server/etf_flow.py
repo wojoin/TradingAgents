@@ -1,8 +1,8 @@
-"""宽基ETF: the shares of the 19 broad-based ETFs the "national team" holds, day by day.
+"""宽基ETF: the shares of the 20 broad-based ETFs the "national team" holds, day by day.
 
 Their trading volume says little about money coming in or going out (a fund can be bought and sold to
 itself all day), but their shares only move when units are created or redeemed, so the shares are where
-the big money shows. Each day, for the 19 funds together:
+the big money shows. Each day, for the 20 funds together:
 
 - ``change``: the total shares against the day before, in 亿份 (the raw series: noisy day to day);
 - ``index`` (加仓指数): total shares ÷ total on the base day × 100. It is the running sum of ``change``
@@ -53,13 +53,17 @@ FUNDS: list[tuple[str, str, str]] = [
     ("159952", "创业板ETF广发", "SZ"),
     ("159901", "深证100ETF易方达", "SZ"),
     ("510230", "金融ETF国泰", "SH"),
+    ("159922", "中证500ETF嘉实", "SZ"),
 ]
+# The 20th, 159922, is not in the list the reference video shows on screen (cut off after row 20), but
+# the video's charts include it: with it the daily change matches to 0.01亿份 (2026-01-28 −329.47 there
+# −329.48, 2026-11-03 +196.99 there +196.98) and, on base 2025-11-20, 2026-06-12 is 30.07 / +0.06.
 SH = [c for c, _, x in FUNDS if x == "SH"]
 SZ = [c for c, _, x in FUNDS if x == "SZ"]
 NAMES = {c: n for c, n, _ in FUNDS}
 
 START = "2025-10-09"          # the first trading day kept
-BASE = "2025-12-31"           # the default base day of the index
+BASE = "2025-11-20"           # the default base day: the reference charts' (a year before 2026-11-20)
 RANGES = ("6m", "1y", "all")
 RETRY_S = 30 * 60             # a day not published yet is asked for again after this
 BASE_GAP = 7                  # a base day may fall back this many calendar days, to the trading day before
@@ -133,7 +137,7 @@ def _retry(fn, *args, tries: int = 3, quiet: bool = True):
 
 
 def update(days: list[str], *, fetch_sse=fetch_sse, fetch_szse=fetch_szse) -> tuple[pd.DataFrame, str, str | None]:
-    """The shares on ``days`` (date × code, 份), only days with all 19; with where they came from
+    """The shares on ``days`` (date × code, 份), only days with all the funds; with where they came from
     ("cache", "network" or "stale": an exchange failed, what is on disk is used) and a note."""
     path = _path()
     kept = pd.read_parquet(path) if path.exists() else pd.DataFrame(columns=["date", "code", "shares"])
@@ -226,7 +230,7 @@ def _num(v, nd=2):
 
 
 def broad(base: str | None = None, rng: str = "1y") -> dict:
-    """The page: the 19 funds' series over ``rng`` (6m, 1y, all) against ``base``, and each fund."""
+    """The page: the funds' series over ``rng`` (6m, 1y, all) against ``base``, and each fund."""
     if rng not in RANGES:
         raise ValueError(f"range must be one of {', '.join(RANGES)}")
     with _lock:
@@ -258,5 +262,5 @@ def broad(base: str | None = None, rng: str = "1y") -> dict:
               "since_base_pct": _num(100 * (last[c] / first[c] - 1)),
               "weight": _num(100 * first[c] / first.sum(), 4)}
              for c, n, x in FUNDS]
-    return {"base": base_day, "range": rng, "start": start, "as_of": as_of, "source": source, "note": note,
+    return {"base": base_day, "base_total": _num(first.sum() / 1e8), "range": rng, "start": start, "as_of": as_of, "source": source, "note": note,
             "funds": funds, "days": days}
