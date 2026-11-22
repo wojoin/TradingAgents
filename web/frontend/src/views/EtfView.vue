@@ -92,9 +92,13 @@ const rateLines = computed<Line[]>(() => [
 ])
 
 const hovered = ref<string | null>(null)
-const shown = computed(() => {
+// The day the details below follow: the last one hovered, kept when the mouse leaves the charts so
+// they can be read; null is the last day.
+const picked = ref<string | null>(null)
+watch(hovered, (d) => { if (d) picked.value = d })
+const detail = computed(() => {
   const ds = days.value
-  return ds.find((d) => d.date === hovered.value) ?? ds[ds.length - 1] ?? null
+  return ds.find((d) => d.date === picked.value) ?? ds[ds.length - 1] ?? null
 })
 const last = computed(() => days.value[days.value.length - 1] ?? null)
 const low = computed(() => days.value.reduce<typeof days.value[number] | null>((m, d) => (!m || d.index < m.index ? d : m), null))
@@ -148,35 +152,16 @@ const cls = (v: number | null | undefined) => (!v ? '' : v > 0 ? 'up' : 'down')
         <div v-if="loading" class="muted small"><i class="pi pi-spin pi-spinner" /> 更新中</div>
       </section>
 
-      <section class="card">
+      <section class="card charts">
         <h3>每日份额变化 <span class="muted small">{{ data.funds.length }} 只合计，亿份（原始数据，噪声大）</span></h3>
-        <LineChart :lines="changeLines" :format="yi" :height="200" :sync="hovered" @hover="hovered = $event">
+        <LineChart :lines="changeLines" :format="yi" :height="150" tight :sync="hovered" @hover="hovered = $event">
           <template #legend="{ day }">
             <span v-if="day && changePct(byDate.get(day)) !== null" :class="cls(byDate.get(day)!.change)">（{{ signedPct(changePct(byDate.get(day))!) }}）</span>
           </template>
         </LineChart>
-        <div v-if="shown?.top.length" class="movers">
-          <div class="small muted mhead">
-            <template v-if="shown.half === null">{{ shown.date }} 申赎大致相抵、合计变化很小，按变化大小列出 {{ shown.top.length }} 只（不计占比）</template>
-            <template v-else>{{ shown.date }} 按对合计的贡献排序：前 <b>{{ shown.half }}</b> 只贡献过半（彩色），这 {{ shown.top.length }} 只合计占比
-              <b>{{ topCover(shown).toFixed(1) }}%</b>；占比 = 该只份额变化 ÷ 当天合计变化</template>
-          </div>
-          <div class="mgrid" :style="{ gridTemplateRows: `repeat(${Math.ceil(shown.top.length / 2)}, auto)` }">
-            <div v-for="([code, v, share], i) in shown.top" :key="code" class="mrow" :class="{ rest: shown.half !== null && i >= shown.half }">
-              <span class="rank">{{ i + 1 }}</span>
-              <span class="mname">{{ names.get(code) || code }}</span>
-              <b :class="cls(v)">{{ signed(v) }}亿份</b>
-              <span class="mshare" :class="cls(v)">{{ share === null ? '—' : `${share.toFixed(1)}%` }}</span>
-            </div>
-          </div>
-        </div>
-        <EtfStocks :date="shown?.date ?? null" />
-      </section>
-
-      <section class="card">
-        <h3>加仓指数 <span class="muted small">合计份额 ÷ 基期合计 × 100。上轨 {{ UPPER }}：升到它之上，底部区间快出来了，相对接近底部；
+        <h3 class="sub">加仓指数 <span class="muted small">合计份额 ÷ 基期合计 × 100。上轨 {{ UPPER }}：升到它之上，底部区间快出来了，相对接近底部；
           下轨 {{ LOWER }}：跌到它之下，需要减仓了</span></h3>
-        <LineChart :lines="indexLines" :format="pts" :height="260" :levels="LEVELS" :sync="hovered" @hover="hovered = $event">
+        <LineChart :lines="indexLines" :format="pts" :height="210" tight :levels="LEVELS" :sync="hovered" @hover="hovered = $event">
           <template #tooltip="{ day }">
             <div><b>{{ day }}</b></div>
             <div>加仓指数 <b class="index">{{ byDate.get(day)?.index.toFixed(2) }}</b></div>
@@ -186,11 +171,29 @@ const cls = (v: number | null | undefined) => (!v ? '' : v > 0 ? 'up' : 'down')
             <span>较前日 <b :class="cls(byDate.get(day)?.index_change)">{{ signed(byDate.get(day)?.index_change) }}</b></span>
           </template>
         </LineChart>
+        <h3 class="sub">变化速率 <span class="muted small">加仓指数 5 日、20 日的变化（点）：上穿 0 是由减转加，越陡加得越快</span></h3>
+        <LineChart :lines="rateLines" :format="(v: number) => signed(v)" :height="140" tight :levels="[{ value: 0, title: '0' }]" :sync="hovered" @hover="hovered = $event" />
       </section>
 
       <section class="card">
-        <h3>变化速率 <span class="muted small">加仓指数 5 日、20 日的变化（点）：上穿 0 是由减转加，越陡加得越快</span></h3>
-        <LineChart :lines="rateLines" :format="(v: number) => signed(v)" :height="180" :levels="[{ value: 0, title: '0' }]" :sync="hovered" @hover="hovered = $event" />
+        <h3>{{ detail?.date }} 当日明细 <span class="muted small">跟随上面图中鼠标停过的那一天</span>
+          <button v-if="picked && picked !== last?.date" class="latest" @click="picked = null">回到最新一天</button></h3>
+        <div v-if="detail?.top.length" class="movers">
+          <div class="small muted mhead">
+            <template v-if="detail.half === null">{{ detail.date }} 申赎大致相抵、合计变化很小，按变化大小列出 {{ detail.top.length }} 只（不计占比）</template>
+            <template v-else>{{ detail.date }} 按对合计的贡献排序：前 <b>{{ detail.half }}</b> 只贡献过半（彩色），这 {{ detail.top.length }} 只合计占比
+              <b>{{ topCover(detail).toFixed(1) }}%</b>；占比 = 该只份额变化 ÷ 当天合计变化</template>
+          </div>
+          <div class="mgrid" :style="{ gridTemplateRows: `repeat(${Math.ceil(detail.top.length / 2)}, auto)` }">
+            <div v-for="([code, v, share], i) in detail.top" :key="code" class="mrow" :class="{ rest: detail.half !== null && i >= detail.half }">
+              <span class="rank">{{ i + 1 }}</span>
+              <span class="mname">{{ names.get(code) || code }}</span>
+              <b :class="cls(v)">{{ signed(v) }}亿份</b>
+              <span class="mshare" :class="cls(v)">{{ share === null ? '—' : `${share.toFixed(1)}%` }}</span>
+            </div>
+          </div>
+        </div>
+        <EtfStocks :date="detail?.date ?? null" />
       </section>
 
       <section class="card algo">
@@ -267,6 +270,9 @@ const cls = (v: number | null | undefined) => (!v ? '' : v > 0 ? 'up' : 'down')
 .head > div:first-child { flex: 1 1 480px; }
 h2 { margin: 0 0 4px; font-size: 18px; }
 h3 { margin: 0 0 8px; font-size: 15px; }
+.charts h3 { margin: 0 0 2px; }
+.latest { margin-left: 8px; border: 0; background: none; color: var(--p-primary-color, #2563eb); cursor: pointer; font-size: 12px; padding: 0; font-weight: normal; }
+.charts h3.sub { margin-top: 10px; padding-top: 8px; border-top: 1px solid #f1f3f6; }
 h3 .small { font-weight: normal; margin-left: 6px; }
 .small { font-size: 12px; line-height: 1.6; }
 .controls { display: flex; align-items: center; gap: 12px; }

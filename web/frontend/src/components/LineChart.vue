@@ -19,11 +19,12 @@ export interface Line {
 // ``levels``: labelled horizontal lines (on the first line's scale), shown whether or not the
 // data reaches them; ``range``: the value axis fixed to [min, max] instead of fitted to the data;
 // ``markers``: a dot on every point; ``sync``: a day hovered on another chart, to put this chart's
-// crosshair and legend on too (charts side by side then follow each other, given each other's ``hover``).
+// crosshair and legend on too (charts side by side then follow each other, given each other's ``hover``);
+// ``tight``: less room above and below the data (5% / 5% instead of 20% / 10%).
 const props = withDefaults(defineProps<{
   lines: Line[]; format?: (v: number) => string; height?: number; pick?: boolean; rows?: string[][]
   levels?: { value: number; title: string; color?: string }[]; range?: [number, number]; markers?: boolean
-  sync?: string | null
+  sync?: string | null; tight?: boolean
 }>(), {
   format: (v: number) => v.toLocaleString('zh-CN'),
   height: 240,
@@ -122,7 +123,7 @@ onMounted(() => {
     autoSize: true,
     layout: { background: { type: ColorType.Solid, color: '#ffffff' }, textColor: '#4b5563', attributionLogo: false },
     grid: { vertLines: { color: '#f1f3f6' }, horzLines: { color: '#f1f3f6' } },
-    rightPriceScale: { borderColor: '#e3e7ec' },
+    rightPriceScale: { borderColor: '#e3e7ec', ...(props.tight ? { scaleMargins: { top: 0.05, bottom: 0.05 } } : {}) },
     timeScale: { borderColor: '#e3e7ec' },
     localization: { locale: 'zh-CN', timeFormatter: formatDay },
     handleScroll: false,

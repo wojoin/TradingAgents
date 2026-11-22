@@ -92,6 +92,7 @@ const money = (v: number) => {
 
 <style scoped>
 .stocks { margin-top: 14px; border-top: 1px solid #eef1f4; padding-top: 10px; }
+.stocks:first-child { margin-top: 0; border-top: 0; padding-top: 0; }
 h4 { margin: 0 0 6px; font-size: 14px; }
 .small { font-size: 12px; }
 .sum { margin: 4px 0 8px; line-height: 1.7; }
