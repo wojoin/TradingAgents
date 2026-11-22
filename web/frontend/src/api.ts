@@ -754,6 +754,17 @@ export interface EtfBroad {
   funds: EtfFund[]; days: EtfDay[]
 }
 
+// What a day's share changes come to in each stock (亿元): change × close × the index's weight,
+// summed over the funds a stock is in; parts: [fund code, 亿元] by size.
+export interface EtfStockFund {
+  code: string; name: string; index: string; index_name: string; change: number; close: number; amount: number
+  weights_date: string
+}
+export interface EtfStocks {
+  date: string; total: number; funds: EtfStockFund[]; count: number; note: string | null
+  stocks: { code: string; name: string; amount: number; parts: [string, number][] }[]
+}
+
 export class ApiError extends Error {
   readonly status: number
   readonly detail: unknown
@@ -787,6 +798,7 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 export const api = {
   etfBroad: (range: EtfRange, base?: string) =>
     request<EtfBroad>(`/api/etf/broad?range=${range}${base ? `&base=${base}` : ''}`),
+  etfStocks: (date?: string) => request<EtfStocks>(`/api/etf/stocks${date ? `?date=${date}` : ''}`),
   options: () => request<Options>('/api/options'),
   startRun: (ticker: string, options?: Partial<RunOptions>) =>
     request<RunSummary>('/api/runs', {

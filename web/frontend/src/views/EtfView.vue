@@ -9,6 +9,7 @@ import Column from 'primevue/column'
 import SelectButton from 'primevue/selectbutton'
 import { api, type EtfBroad, type EtfDay, type EtfRange } from '../api'
 import LineChart, { type Line } from '../components/LineChart.vue'
+import EtfStocks from '../components/EtfStocks.vue'
 
 const UP = '#e5484d'
 const DOWN = '#1f9d55'
@@ -169,6 +170,7 @@ const cls = (v: number | null | undefined) => (!v ? '' : v > 0 ? 'up' : 'down')
             </div>
           </div>
         </div>
+        <EtfStocks :date="shown?.date ?? null" />
       </section>
 
       <section class="card">
