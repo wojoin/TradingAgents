@@ -185,7 +185,7 @@ def test_broad_shapes_the_page(cache, monkeypatch):
     assert out["base"] == "2025-11-20" and out["as_of"] == "2026-06-12"
     assert out["base_total"] == pytest.approx(base_total, abs=0.01)
     days = {d["date"]: d for d in out["days"]}
-    assert days["2026-01-28"]["change"] == pytest.approx(-329.48, abs=0.01)
+    assert days["2026-01-28"]["change"] == -329.48                       # exactly −329.475: half to even, as there
     assert days["2026-01-28"]["index_change"] == pytest.approx(100 * -329.48 / base_total, abs=0.01)
     assert days["2025-11-20"]["index_change"] is None
     assert days["2026-01-28"]["top"][0][0] == "510310"            # the day's biggest mover
@@ -332,3 +332,21 @@ def test_the_report_lists_the_funds_by_the_days_size(report_data):
     assert "按 2026-06-12 规模排序" in text
     table = text[text.index("按 2026-06-12 规模排序"):]
     assert table.index("沪深300ETF华泰柏瑞") < table.index("沪深300ETF易方达")
+
+
+def test_numbers_round_half_to_even_like_the_reference():
+    # The reference shows −329.48 and +196.98 where the shares give exactly −329.475 and +196.985.
+    assert etf_flow.round_half_even(-329.475) == -329.48
+    assert etf_flow.round_half_even(196.985) == 196.98
+    assert etf_flow.round_half_even(196.98500001) == 196.99
+    assert etf_flow.round_half_even(30.066403) == 30.07
+    assert etf_flow.round_half_even(None) is None and etf_flow.round_half_even(float("nan")) is None
+    assert etf_flow.round_half_even(1.23456, 4) == 1.2346
+
+
+def test_shares_are_kept_as_whole_units(cache):
+    f = Fakes()
+    real_szse = f.szse
+    f.szse = lambda code, s, e: {d: v + 0.0000076 for d, v in real_szse(code, s, e).items()}   # float noise
+    w, _, _ = etf_flow.update(list(REAL), fetch_sse=f.sse, fetch_szse=f.szse)
+    assert (w % 1 == 0).all().all()

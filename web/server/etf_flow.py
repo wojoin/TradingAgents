@@ -23,6 +23,7 @@ import logging
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from decimal import ROUND_HALF_EVEN, Decimal
 from pathlib import Path
 
 import pandas as pd
@@ -47,7 +48,7 @@ FUNDS: list[tuple[str, str, str]] = [
     ("159952", "创业板ETF广发", "SZ"),
     ("510180", "上证180ETF华安", "SH"),
     ("588050", "科创50ETF工银", "SH"),
-    ("159922", "中证500ETF嘉实", "SZ"),
+    ("159922", "中证500ETF嘉实", "SZ"),       # 与 etf.jpg 不同：不在它列出的 19 只（第 2–20 行）中，见列表下方说明
     ("512500", "中证500ETF华夏", "SH"),
     ("560010", "中证1000ETF广发", "SH"),
     ("159845", "中证1000ETF华夏", "SZ"),
@@ -187,7 +188,7 @@ def update(days: list[str], *, fetch_sse=fetch_sse, fetch_szse=fetch_szse) -> tu
 
     part = kept[kept["date"].isin(days) & kept["code"].isin(NAMES)]
     wide = part.pivot(index="date", columns="code", values="shares").reindex(columns=list(NAMES)).sort_index()
-    wide = wide.astype(float)
+    wide = wide.astype(float).round()           # whole 份: the exchanges publish 万份 to 2 places
     gaps = [d for d in days if d not in wide.index or wide.loc[d].isna().any()]
     wide = wide.dropna()
 
@@ -278,8 +279,17 @@ def _trade_days() -> list[str]:
     return [f"{d:%Y-%m-%d}" for d in store.trade_calendar() if pd.Timestamp(START) <= d <= last]
 
 
-def _num(v, nd=2):
-    return None if v is None or pd.isna(v) else round(float(v), nd)
+def round_half_even(v, nd: int = 2) -> float | None:
+    """``v`` to ``nd`` places, an exact half to the even digit, as the reference charts round
+    (−329.475 → −329.48, 196.985 → 196.98). The float's own noise (−329.47499999999997) is cleared
+    first, so a value that is a half in 份 is treated as one."""
+    if v is None or pd.isna(v):
+        return None
+    exact = Decimal(repr(round(float(v), 10)))
+    return float(exact.quantize(Decimal(1).scaleb(-nd), rounding=ROUND_HALF_EVEN))
+
+
+_num = round_half_even
 
 
 def broad(base: str | None = None, rng: str = "1y") -> dict:

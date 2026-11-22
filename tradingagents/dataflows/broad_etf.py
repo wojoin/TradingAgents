@@ -26,9 +26,12 @@ def _unavailable(why: str) -> str:
 
 
 def _f(v, nd: int = 2, sign: bool = False) -> str:
-    if v is None or pd.isna(v):
+    """``v`` to ``nd`` places, an exact half to the even digit as on the 宽基ETF page."""
+    from web.server.etf_flow import round_half_even
+    v = round_half_even(v, nd)
+    if v is None:
         return "—"
-    return f"{float(v):+.{nd}f}" if sign else f"{float(v):.{nd}f}"
+    return f"{v:+.{nd}f}" if sign else f"{v:.{nd}f}"
 
 
 def _by_size(etf_flow, wide: pd.DataFrame, day: str, base: str) -> list[str]:
