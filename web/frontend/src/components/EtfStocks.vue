@@ -9,7 +9,8 @@ import { api, type EtfStocks } from '../api'
 const props = defineProps<{ date: string | null }>()
 const SIZES = [20, 50, 100, 200, 500, 1000, 0]          // 0: all
 const SIZE_KEY = 'etf.stocks.size'
-const PER_ROW = 5                                        // funds a row in 来自哪只 ETF
+const PER_ROW = 5                                        // funds a row in 来自哪只 ETF, each column wide
+                                                         // enough for 沪深300ETF华泰柏瑞  −1097万 (narrower: scroll)
 
 function storedSize(): number {
   try {
@@ -129,9 +130,9 @@ const pctText = (v: number | null) => (v === null ? '—' : `${v > 0 ? '+' : ''}
             <td class="r"><b :class="cls(s.amount)">{{ money(s.amount) }}</b></td>
             <td class="r" :class="cls(s.amount)">{{ pctText(ratio(s.amount)) }}</td>
             <td>
-              <div class="parts" :style="{ gridTemplateColumns: `repeat(${PER_ROW}, minmax(0, 1fr))` }">
+              <div class="parts" :style="{ gridTemplateColumns: `repeat(${PER_ROW}, minmax(180px, 1fr))` }">
                 <span v-for="[f, a] in s.parts" :key="f" class="part" :title="`${names.get(f) || f} ${money(a)}`">
-                  <span class="fname">{{ names.get(f) || f }}</span><span :class="cls(a)">{{ money(a) }}</span></span>
+                  <span class="fname">{{ names.get(f) || f }}</span>{{ '\u00a0\u00a0' }}<span :class="cls(a)">{{ money(a) }}</span></span>
               </div>
             </td>
           </tr>
@@ -170,9 +171,9 @@ h4 { margin: 0 0 6px; font-size: 14px; }
 .size.on { border-color: var(--p-primary-color, #2563eb); color: var(--p-primary-color, #2563eb); font-weight: 600; }
 .scroll { max-height: 560px; overflow: auto; border: 1px solid #f1f3f6; border-radius: 4px; }
 .scroll thead th { position: sticky; top: 0; background: #fff; z-index: 1; }
-.parts { display: grid; gap: 1px 14px; line-height: 1.6; }
-.part { display: flex; justify-content: space-between; gap: 6px; min-width: 0; white-space: nowrap; }
-.fname { overflow: hidden; text-overflow: ellipsis; color: #374151; }
+.parts { display: grid; gap: 1px 12px; line-height: 1.6; }
+.part { white-space: nowrap; }
+.fname { color: #374151; }
 .link { color: inherit; text-decoration: none; }
 .link:hover { color: var(--p-primary-color, #2563eb); }
 .note { margin: 8px 0 0; line-height: 1.6; }
