@@ -728,7 +728,7 @@ export interface Quote extends MarketRow {
 }
 
 // A failed request: the HTTP status and the body's ``detail`` (a string or an object).
-// 宽基ETF: the 20 broad-based ETFs' shares (亿份), their daily change, the 加仓指数 and its rate.
+// 宽基ETF: the 19 broad-based ETFs' shares (亿份), their daily change, the 加仓指数 and its rate.
 export type EtfRange = '6m' | '1y' | 'all'
 export interface EtfFund {
   code: string; name: string; exchange: 'SH' | 'SZ'

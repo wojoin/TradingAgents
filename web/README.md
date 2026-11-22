@@ -122,17 +122,17 @@ A browser front end for TradingAgents, with a left-hand menu:
   up to 40 due boards a run) and 业绩预告 (a
   report period's forecasts, one a stock, by type and 申万 industry, from the events module's
   cache), the last in a sixth category, 业绩.
-- **宽基ETF** (broad-based ETFs): the shares of the 20 main broad-based ETFs the "national team"
+- **宽基ETF** (broad-based ETFs): the shares of the 19 main broad-based ETFs the "national team"
   holds (沪深300, 上证50, 中证500/800/1000, 创业板, 科创50, 深证100, 上证180 and 金融 funds). Their volume
   can be traded back and forth to itself, so it says little; their shares only move when units are
-  created or redeemed, which is where the big money shows. Three charts over the same days: the 20's
+  created or redeemed, which is where the big money shows. Three charts over the same days: the 19's
   total daily share change in 亿份 (raw, noisy; the day's three biggest movers named under it), the
   加仓指数 (total shares ÷ the total on the base day × 100, base 2025-11-20 by default and any day can
   be picked; the same as each fund's own share index weighted by its part of the base day's total) with 较前日 in a box over the hovered day and
   bands at 70 (above: the bottom is near) and 30 (below: cut positions), and its rate, the index's
   change over 5 and 20 trading days. A card spells out the formulas with the latest day worked through.
-  The 20 and the base reproduce the reference charts this follows: 2026-01-28 −329.47亿份 (−329.48 there),
-  2026-06-12 30.07 and +0.06. Below, each fund's shares, its change on the day and since the base, and its
+  Against the reference charts this follows: 2026-01-28 −322.64亿份 (−329.48 there), 2026-06-12 29.90
+  and +0.05 (30.07 and +0.06 there); the reference holds a little more than these 19. Below, each fund's shares, its change on the day and since the base, and its
   weight. The shares come from the exchanges (上交所 a day for every fund per request, 深交所 a fund
   a month at a time), kept in `.akshare_data/web/etf_shares.parquet` from 2025-10-09 and topped up
   with the missing days on each visit (the first download takes about a minute). A day either

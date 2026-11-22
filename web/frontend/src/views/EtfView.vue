@@ -1,8 +1,8 @@
 <script setup lang="ts">
-// 宽基ETF: the shares of the 20 broad-based ETFs the "national team" holds (web/server/etf_flow.py).
+// 宽基ETF: the shares of the 19 broad-based ETFs the "national team" holds (web/server/etf_flow.py).
 // Volume can be made by trading with oneself; shares move only when units are created or redeemed,
 // so their change is where the big money shows. Three charts over the same days: the raw daily change
-// of the 20 together, the 加仓指数 (total shares ÷ the base day's × 100) and its 5 / 20-day rate.
+// of the 19 together, the 加仓指数 (total shares ÷ the base day's × 100) and its 5 / 20-day rate.
 import { computed, ref, watch } from 'vue'
 import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
@@ -112,8 +112,8 @@ const cls = (v: number | null | undefined) => (!v ? '' : v > 0 ? 'up' : 'down')
       <div>
         <h2>宽基ETF</h2>
         <p class="muted small">
-          20 只主要宽基 ETF（国家队重仓）的份额。成交量可以左手倒右手地对敲出来，看不出是真买还是假买；份额只在申购、赎回时变化，
-          才是大资金进出的痕迹。单日份额变化噪声大，把 20 只的份额按基期份额加权、合成「加仓指数」，再看它的变化速率，趋势才清楚（算法见下方「加仓指数怎么算」）。
+          19 只主要宽基 ETF（国家队重仓）的份额。成交量可以左手倒右手地对敲出来，看不出是真买还是假买；份额只在申购、赎回时变化，
+          才是大资金进出的痕迹。单日份额变化噪声大，把 19 只的份额按基期份额加权、合成「加仓指数」，再看它的变化速率，趋势才清楚（算法见下方「加仓指数怎么算」）。
         </p>
       </div>
       <div class="controls">

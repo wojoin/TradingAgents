@@ -1,8 +1,8 @@
-"""宽基ETF: the shares of the 20 broad-based ETFs the "national team" holds, day by day.
+"""宽基ETF: the shares of the 19 broad-based ETFs the "national team" holds, day by day.
 
 Their trading volume says little about money coming in or going out (a fund can be bought and sold to
 itself all day), but their shares only move when units are created or redeemed, so the shares are where
-the big money shows. Each day, for the 20 funds together:
+the big money shows. Each day, for the 19 funds together:
 
 - ``change``: the total shares against the day before, in 亿份 (the raw series: noisy day to day);
 - ``index`` (加仓指数): total shares ÷ total on the base day × 100. It is the running sum of ``change``
@@ -53,11 +53,8 @@ FUNDS: list[tuple[str, str, str]] = [
     ("159952", "创业板ETF广发", "SZ"),
     ("159901", "深证100ETF易方达", "SZ"),
     ("510230", "金融ETF国泰", "SH"),
-    ("159922", "中证500ETF嘉实", "SZ"),
+    # ("159922", "中证500ETF嘉实", "SZ"),  # not in the list (etf.jpg rows 2-20): left out
 ]
-# The 20th, 159922, is not in the list the reference video shows on screen (cut off after row 20), but
-# the video's charts include it: with it the daily change matches to 0.01亿份 (2026-01-28 −329.47 there
-# −329.48, 2026-11-03 +196.99 there +196.98) and, on base 2025-11-20, 2026-06-12 is 30.07 / +0.06.
 SH = [c for c, _, x in FUNDS if x == "SH"]
 SZ = [c for c, _, x in FUNDS if x == "SZ"]
 NAMES = {c: n for c, n, _ in FUNDS}
