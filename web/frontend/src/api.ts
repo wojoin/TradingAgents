@@ -767,7 +767,8 @@ export interface EtfStocks {
 
 // One fund's constituents: its index's latest weights with the latest quote, TTM P/E and ROE.
 export interface EtfHoldingRow {
-  code: string; name: string; weight: number; price: number | null; pct_chg: number | null; turnover: number | null
+  code: string; name: string; weight: number; industry: string | null  // 申万 一级-二级-三级
+  price: number | null; pct_chg: number | null; turnover: number | null
   amount: number | null; pe_ttm: number | null; roe: number | null; total_mv: number | null
 }
 export interface EtfHoldings {

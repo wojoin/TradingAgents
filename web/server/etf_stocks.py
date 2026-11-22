@@ -187,10 +187,11 @@ def roe_latest() -> tuple[pd.Series | None, str]:
 def holdings(fund: str, *, w: pd.DataFrame | None = None, table: dict | None = None,
              roe: tuple[pd.Series | None, str] | None = None) -> dict:
     """A fund's constituents: its index's latest weights, each stock with the latest market table's
-    quote (price, change, turnover, amount, TTM P/E, market value) and ROE, heaviest first.
+    quote (price, change, turnover, amount, TTM P/E, market value), 申万 industry (一级-二级-三级)
+    and ROE, heaviest first.
 
     ``{fund, name, index, index_name, weights_date, date, roe_label, count, rows: [{code, name,
-    weight, price, pct_chg, turnover, amount, pe_ttm, roe, total_mv}]}``.
+    weight, industry, price, pct_chg, turnover, amount, pe_ttm, roe, total_mv}]}``.
     """
     if fund not in INDEX:
         raise FileNotFoundError(f"{fund} 不在 20 只宽基 ETF 中")
@@ -209,7 +210,9 @@ def holdings(fund: str, *, w: pd.DataFrame | None = None, table: dict | None = N
     for r in snap.itertuples(index=False):
         q = by_code.get(r.code, {})
         v = roe_s.get(r.code) if roe_s is not None else None
+        levels = [x for x in (q.get("industry"), q.get("sub_industry"), q.get("industry3")) if x]
         rows.append({"code": r.code, "name": q.get("name") or r.name, "weight": float(r.weight),
+                     "industry": "-".join(levels) or None,
                      "price": q.get("price"), "pct_chg": q.get("pct_chg"), "turnover": q.get("turnover"),
                      "amount": q.get("amount"), "pe_ttm": q.get("pe_ttm"), "total_mv": q.get("total_mv"),
                      "roe": None if v is None or pd.isna(v) else round(float(v), 2)})

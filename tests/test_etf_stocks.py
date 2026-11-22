@@ -80,16 +80,19 @@ def test_the_route(monkeypatch):
 def test_holdings_join_the_weights_with_the_quotes_heaviest_first():
     table = {"date": "2026-11-20", "rows": [
         {"code": "600519", "name": "贵州茅台", "price": 1485.75, "pct_chg": 1.75, "turnover": 0.54,
-         "amount": 9.8e9, "pe_ttm": 22.6, "total_mv": 1.86e12},
+         "amount": 9.8e9, "pe_ttm": 22.6, "total_mv": 1.86e12, "industry": "食品饮料", "sub_industry": "白酒Ⅱ",
+         "industry3": "白酒Ⅲ"},
     ]}
     roe = (pd.Series({"600519": 24.474, "300750": float("nan")}), "2026 三季报")
     r = etf_stocks.holdings("510300", w=W, table=table, roe=roe)
     assert (r["index_name"], r["weights_date"], r["date"], r["roe_label"], r["count"]) == (
         "沪深300", "2026-10-30", "2026-11-20", "2026 三季报", 2), "the index's latest snapshot"
     assert [x["code"] for x in r["rows"]] == ["300750", "600519"]
-    assert r["rows"][1] == {"code": "600519", "name": "贵州茅台", "weight": 10.0, "price": 1485.75, "pct_chg": 1.75,
+    assert r["rows"][1] == {"code": "600519", "name": "贵州茅台", "weight": 10.0, "industry": "食品饮料-白酒Ⅱ-白酒Ⅲ",
+                            "price": 1485.75, "pct_chg": 1.75,
                             "turnover": 0.54, "amount": 9.8e9, "pe_ttm": 22.6, "total_mv": 1.86e12, "roe": 24.47}
     assert r["rows"][0]["name"] == "宁德时代" and r["rows"][0]["price"] is None and r["rows"][0]["roe"] is None
+    assert r["rows"][0]["industry"] is None
     with pytest.raises(FileNotFoundError):
         etf_stocks.holdings("600519", w=W, table=table, roe=roe)
     with pytest.raises(FileNotFoundError):

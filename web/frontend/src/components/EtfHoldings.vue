@@ -28,8 +28,8 @@ watch(() => props.code, async (c) => {
 }, { immediate: true })
 
 type Key = keyof EtfHoldingRow
-const COLS: { key: Key; label: string; title?: string }[] = [
-  { key: 'weight', label: '持仓占比' }, { key: 'price', label: '最新' }, { key: 'pct_chg', label: '涨幅' },
+const COLS: { key: Key; label: string; left?: boolean }[] = [
+  { key: 'weight', label: '持仓占比' }, { key: 'industry', label: '行业', left: true }, { key: 'price', label: '最新' }, { key: 'pct_chg', label: '涨幅' },
   { key: 'turnover', label: '换手率' }, { key: 'amount', label: '成交额' }, { key: 'pe_ttm', label: '市盈率(TTM)' },
   { key: 'roe', label: 'ROE' }, { key: 'total_mv', label: '总市值' },
 ]
@@ -39,18 +39,20 @@ function sortBy(k: Key) {
   if (sortKey.value === k) sortDir.value = -sortDir.value
   else {
     sortKey.value = k
-    sortDir.value = -1
+    sortDir.value = k === 'industry' ? 1 : -1      // text A→Z first, numbers largest first
   }
 }
-// Sorted over every constituent; a missing value goes last either way.
+// Sorted over every constituent; a missing value goes last either way. Text (the industry) by its
+// pinyin, so one industry's stocks come together.
 const sorted = computed(() => {
   const rows = [...(data.value?.rows || [])]
   const k = sortKey.value
   return rows.sort((a, b) => {
-    const x = a[k] as number | null
-    const y = b[k] as number | null
+    const x = a[k]
+    const y = b[k]
     if (x === null || y === null) return x === null ? (y === null ? 0 : 1) : -1
-    return (x - y) * sortDir.value
+    const c = typeof x === 'string' ? x.localeCompare(y as string, 'zh-CN') : (x as number) - (y as number)
+    return c * sortDir.value
   })
 })
 const rows = computed(() => sorted.value.slice(0, shown.value))
@@ -72,7 +74,7 @@ const cls = (v: number | null) => (!v ? '' : v > 0 ? 'up' : 'down')
       <table class="tbl">
         <thead><tr>
           <th class="l">#</th><th class="l">名称 / 代码</th>
-          <th v-for="c in COLS" :key="c.key" class="r sort" :class="{ on: sortKey === c.key }" @click="sortBy(c.key)">
+          <th v-for="c in COLS" :key="c.key" class="sort" :class="[c.left ? 'l' : 'r', { on: sortKey === c.key }]" @click="sortBy(c.key)">
             {{ c.label }}<i v-if="sortKey === c.key" class="pi" :class="sortDir < 0 ? 'pi-sort-amount-down' : 'pi-sort-amount-up'" /></th>
         </tr></thead>
         <tbody>
@@ -80,6 +82,7 @@ const cls = (v: number | null) => (!v ? '' : v > 0 ? 'up' : 'down')
             <td class="muted">{{ i + 1 }}</td>
             <td class="nm"><RouterLink :to="`/stock/${r.code}`" class="link">{{ r.name }}</RouterLink><span class="code">{{ r.code }}</span></td>
             <td class="r">{{ num(r.weight, 3) }}%</td>
+            <td class="ind" :title="r.industry ?? ''">{{ r.industry ?? '—' }}</td>
             <td class="r" :class="cls(r.pct_chg)">{{ num(r.price) }}</td>
             <td class="r" :class="cls(r.pct_chg)">{{ pct(r.pct_chg) }}</td>
             <td class="r">{{ r.turnover === null ? '—' : `${r.turnover.toFixed(2)}%` }}</td>
@@ -112,6 +115,7 @@ const cls = (v: number | null) => (!v ? '' : v > 0 ? 'up' : 'down')
 .sort { cursor: pointer; user-select: none; }
 .sort.on { color: var(--p-text-color, #1f2933); }
 .sort i { font-size: 10px; margin-left: 3px; }
+.ind { max-width: 260px; overflow: hidden; text-overflow: ellipsis; color: #4b5563; }
 .code { margin-left: 6px; color: #9aa3ad; font-size: 11px; }
 .link { color: inherit; text-decoration: none; }
 .link:hover { color: var(--p-primary-color, #2563eb); }
