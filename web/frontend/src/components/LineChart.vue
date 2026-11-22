@@ -12,6 +12,7 @@ export interface Line {
   bars?: boolean          // a bar per day (each may have its own colour) instead of a line
 }
 
+// Slot ``tooltip``: a box over the first line's point on the day under the mouse, given that day.
 // Slot ``legend`` (one-row legend only): more on the shown day, after the lines' values.
 // ``rows``: line names grouped into legend rows (any line not named goes on a row of its own at
 // the end); without it the legend is one wrapping row.
@@ -34,6 +35,8 @@ const el = ref<HTMLDivElement>()
 const hover = ref<string | null>(null)
 // The line under the mouse (within PICK_PX of it): its index in ``lines``, value and where to label it.
 const PICK_PX = 14
+// Where the tooltip box points: the first line's point on the hovered day, in the chart's pixels.
+const tipAt = ref<{ x: number; y: number } | null>(null)
 const near = ref<{ i: number; value: number; x: number; y: number } | null>(null)
 let chart: IChartApi | null = null
 let series: ISeriesApi<SeriesType>[] = []
@@ -53,6 +56,16 @@ const legendRows = computed(() => {
   const named = new Set(props.rows.flat())
   return [...props.rows.map((r) => r.flatMap((n) => byName.get(n) ?? [])), items.filter((x) => !named.has(x.name))]
     .filter((r) => r.length)
+})
+
+// Above the point, centred on it; below it near the top, kept inside at the sides.
+const tipStyle = computed(() => {
+  const t = tipAt.value
+  if (!t) return {}
+  const w = el.value?.clientWidth ?? 0
+  const tx = t.x < 70 ? '0%' : t.x > w - 130 ? '-100%' : '-50%'
+  const below = t.y < 80
+  return { left: `${t.x}px`, top: `${below ? t.y + 12 : t.y - 12}px`, transform: `translate(${tx}, ${below ? '0' : '-100%'})` }
 })
 
 // Right of the mouse, or left of it in the chart's right third, so the label stays inside.
@@ -114,6 +127,9 @@ onMounted(() => {
   chart.subscribeCrosshairMove((p) => {
     hover.value = p.time === undefined ? null : formatDay(p.time)
     emit('hover', hover.value)
+    const v0 = series[0] && p.point ? (p.seriesData.get(series[0]) as { value?: number } | undefined)?.value : undefined
+    const y0 = v0 === undefined ? null : series[0].priceToCoordinate(v0)
+    tipAt.value = p.point && y0 !== null ? { x: p.point.x, y: y0 } : null
     if (!props.pick) return
     let best: { i: number; value: number; d: number } | null = null
     if (p.point && p.time !== undefined) {
@@ -158,6 +174,9 @@ onBeforeUnmount(() => {
     </div>
     <div class="plot">
       <div ref="el" :style="{ height: `${height}px` }" />
+      <div v-if="$slots.tooltip && tipAt && hover" class="tip" :style="tipStyle">
+        <slot name="tooltip" :day="hover" />
+      </div>
       <div v-if="near && lines[near.i]" class="pick" :style="pickStyle">
         <i class="dot" :style="{ background: lines[near.i].color }" />{{ lines[near.i].name }}
         <b>{{ format(near.value) }}</b>
@@ -174,5 +193,8 @@ onBeforeUnmount(() => {
 .pick { position: absolute; z-index: 3; pointer-events: none; white-space: nowrap; font-size: 12px; padding: 3px 8px;
         background: #fff; border: 1px solid #e3e7ec; border-radius: 6px; box-shadow: 0 2px 6px rgba(0, 0, 0, .08);
         font-variant-numeric: tabular-nums; }
+.tip { position: absolute; z-index: 3; pointer-events: none; white-space: nowrap; font-size: 12px; line-height: 1.7;
+       padding: 6px 10px; background: #fff; border: 1px solid #e3e7ec; border-radius: 6px;
+       box-shadow: 0 2px 8px rgba(0, 0, 0, .12); font-variant-numeric: tabular-nums; }
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
 </style>

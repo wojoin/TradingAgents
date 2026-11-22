@@ -16,6 +16,14 @@ const RANGES: { label: string; value: EtfRange }[] = [
   { label: '半年', value: '6m' }, { label: '一年', value: '1y' }, { label: '全部', value: 'all' },
 ]
 const DEFAULT_BASE = '2025-12-31'
+// The 加仓指数's bands: above UPPER the bottom is near; below LOWER it is time to cut positions.
+const UPPER = 70
+const LOWER = 30
+const LEVELS = [
+  { value: 100, title: '基期 100' },
+  { value: UPPER, title: `上轨 ${UPPER} 接近底部`, color: UP },
+  { value: LOWER, title: `下轨 ${LOWER} 需减仓`, color: DOWN },
+]
 
 function stored(key: string, fallback: string): string {
   try {
@@ -82,6 +90,13 @@ const shown = computed(() => {
 const last = computed(() => days.value[days.value.length - 1] ?? null)
 const low = computed(() => days.value.reduce<typeof days.value[number] | null>((m, d) => (!m || d.index < m.index ? d : m), null))
 
+const zone = computed(() => {
+  const v = last.value?.index
+  if (v === undefined) return null
+  if (v >= UPPER) return { text: `指数在上轨 ${UPPER} 之上，相对接近底部。`, cls: 'up' }
+  if (v <= LOWER) return { text: `指数在下轨 ${LOWER} 之下，需要减仓。`, cls: 'down' }
+  return { text: `指数在 ${LOWER}–${UPPER} 之间。`, cls: '' }
+})
 const signed = (v: number | null | undefined, nd = 2) => (v === null || v === undefined ? '—' : `${v > 0 ? '+' : ''}${v.toFixed(nd)}`)
 const yi = (v: number) => `${signed(v)}亿份`
 const pts = (v: number) => v.toFixed(2)
@@ -116,6 +131,7 @@ const cls = (v: number | null | undefined) => (!v ? '' : v > 0 ? 'up' : 'down')
           <b :class="cls(last?.change)">{{ signed(last?.change) }}</b> 亿份；加仓指数 <b>{{ last?.index.toFixed(2) }}</b>
           （基期 {{ data.base }} = 100，较前日 <b :class="cls(last?.index_change)">{{ signed(last?.index_change) }}</b>），5 日 <b :class="cls(last?.rate5)">{{ signed(last?.rate5) }}</b>、
           20 日 <b :class="cls(last?.rate20)">{{ signed(last?.rate20) }}</b>。
+          <b v-if="zone" :class="zone.cls">{{ zone.text }}</b>
           <span v-if="low" class="muted">区间最低 {{ low.index.toFixed(2) }}（{{ low.date }}）。</span>
         </div>
         <div v-if="data.note || data.source === 'stale'" class="bad small">{{ data.note }}</div>
@@ -133,8 +149,14 @@ const cls = (v: number | null | undefined) => (!v ? '' : v > 0 ? 'up' : 'down')
       </section>
 
       <section class="card">
-        <h3>加仓指数 <span class="muted small">合计份额 ÷ 基期合计 × 100：大于 100 是基期以来净申购，越低赎回越多</span></h3>
-        <LineChart :lines="indexLines" :format="pts" :height="240" :levels="[{ value: 100, title: '基期 100' }]">
+        <h3>加仓指数 <span class="muted small">合计份额 ÷ 基期合计 × 100。上轨 {{ UPPER }}：升到它之上，底部区间快出来了，相对接近底部；
+          下轨 {{ LOWER }}：跌到它之下，需要减仓了</span></h3>
+        <LineChart :lines="indexLines" :format="pts" :height="260" :levels="LEVELS">
+          <template #tooltip="{ day }">
+            <div><b>{{ day }}</b></div>
+            <div>加仓指数 <b class="index">{{ byDate.get(day)?.index.toFixed(2) }}</b></div>
+            <div>较前日 <b :class="cls(byDate.get(day)?.index_change)">{{ signed(byDate.get(day)?.index_change) }}</b></div>
+          </template>
           <template #legend="{ day }">
             <span>较前日 <b :class="cls(byDate.get(day)?.index_change)">{{ signed(byDate.get(day)?.index_change) }}</b></span>
           </template>
@@ -188,5 +210,6 @@ h3 .small { font-weight: normal; margin-left: 6px; }
 .sum { font-size: 13px; line-height: 1.8; font-variant-numeric: tabular-nums; }
 .movers { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 6px 0 0; }
 .bad { color: var(--up); }
+.index { color: #2563eb; }
 p.card { margin: 0; }
 </style>
