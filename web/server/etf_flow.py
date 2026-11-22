@@ -44,6 +44,7 @@ FUNDS: list[tuple[str, str, str]] = [
     ("159919", "沪深300ETF嘉实", "SZ"),
     ("512500", "中证500ETF华夏", "SH"),
     ("510500", "中证500ETF南方", "SH"),
+    # ("159922", "中证500ETF嘉实", "SZ"),  # not in the list (etf.jpg rows 2-20): left out
     ("515800", "中证800ETF汇添富", "SH"),
     ("512100", "中证1000ETF南方", "SH"),
     ("159845", "中证1000ETF华夏", "SZ"),
@@ -53,7 +54,6 @@ FUNDS: list[tuple[str, str, str]] = [
     ("159952", "创业板ETF广发", "SZ"),
     ("159901", "深证100ETF易方达", "SZ"),
     ("510230", "金融ETF国泰", "SH"),
-    # ("159922", "中证500ETF嘉实", "SZ"),  # not in the list (etf.jpg rows 2-20): left out
 ]
 SH = [c for c, _, x in FUNDS if x == "SH"]
 SZ = [c for c, _, x in FUNDS if x == "SZ"]
@@ -61,6 +61,8 @@ NAMES = {c: n for c, n, _ in FUNDS}
 
 START = "2025-10-09"          # the first trading day kept
 BASE = "2025-11-20"           # the default base day: the reference charts' (a year before 2026-11-20)
+UPPER = 70                    # 加仓指数 above it: the bottom is near (relatively close to the bottom)
+LOWER = 30                    # below it: time to cut positions
 RANGES = ("6m", "1y", "all")
 RETRY_S = 30 * 60             # a day not published yet is asked for again after this
 BASE_GAP = 7                  # a base day may fall back this many calendar days, to the trading day before

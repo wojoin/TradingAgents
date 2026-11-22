@@ -42,6 +42,7 @@ from tradingagents.agents.structured import (
     invoke_structured_or_freetext,
 )
 from tradingagents.agents.tools import get_news
+from tradingagents.dataflows.broad_etf import get_broad_etf_flow
 from tradingagents.dataflows.market_context import get_market_temperature
 from tradingagents.dataflows.symbols import a_share_code
 from tradingagents.dataflows.vendors.akshare import sentiment as ashare_sentiment
@@ -100,7 +101,8 @@ def create_sentiment_analyst(llm):
                 news_block=news_block,
                 fund_block=_ashare_block(ashare_sentiment.get_fund_sentiment, ticker, end_date),
                 market_block=_ashare_block(ashare_sentiment.get_market_sentiment, end_date, ticker)
-                + "\n\n" + _ashare_block(get_market_temperature, end_date, ticker),
+                + "\n\n" + _ashare_block(get_market_temperature, end_date, ticker)
+                + "\n\n" + _ashare_block(get_broad_etf_flow, end_date),
                 popularity_block=_ashare_block(ashare_sentiment.get_popularity, ticker, end_date),
             )
         else:
@@ -263,6 +265,7 @@ def _build_ashare_system_message(
 ### Block 2 — 市场情绪 (market sentiment): the whole market's speculative temperature
 涨停 / 炸板 / 跌停 counts, 炸板率, 最高连板 (consecutive-limit-up height), 连板梯队, and 昨日涨停今日平均涨幅 (limit-up premium), plus whether {ticker} itself sat in those pools.
 Then the market's temperature as the 行情 page reads it: 情绪综合分 and its six parts (0–100) over 5 days, QVIX (implied volatility, A-shares' fear gauge) and its percentile, the margin balance and its 1 / 5 / 20-day change (leveraged money), the whole market's P/E percentile and equity risk premium, and the limit-up themes (主线题材) of the last 5 days with whether {ticker} was among them. Use them to judge how much risk the market is willing to take and whether {ticker}'s theme is where the speculative money is; they describe the market, not {ticker}.
+Last, the 宽基ETF加仓指数: the 19 broad-based ETFs the "national team" holds, their total shares against the base day (= 100). Shares move only on creation and redemption (volume can be traded back and forth), so this is where the big money shows: a rising index with positive 5 / 20-day rates means the big money is adding, a falling one with negative rates that it is redeeming; a rate turning from negative to positive is the turn from cutting to adding. Above the upper band 70 the bottom is near (relatively close to the bottom); below the lower band 30 it is time to cut positions. Say where the index sits against its bands, which way and how fast it is moving, and what that means for the market backdrop and the timing of a position in {ticker}; it describes the whole market, not {ticker}.
 
 <start_of_market_sentiment>
 {market_block}

@@ -132,7 +132,9 @@ A browser front end for TradingAgents, with a left-hand menu:
   bands at 70 (above: the bottom is near) and 30 (below: cut positions), and its rate, the index's
   change over 5 and 20 trading days. A card spells out the formulas with the latest day worked through.
   Against the reference charts this follows: 2026-01-28 −322.64亿份 (−329.48 there), 2026-06-12 29.90
-  and +0.05 (30.07 and +0.06 there); the reference holds a little more than these 19. Below, each fund's shares, its change on the day and since the base, and its
+  and +0.05 (30.07 and +0.06 there); the reference holds a little more than these 19. The sentiment analyst reads it too (block 2, 市场情绪:
+  `tradingagents/dataflows/broad_etf.py`, never past the analysis date): the index, 较前日, where it sits
+  against the bands, the 5 / 20-day rates, the day's biggest movers and the last 10 days. Below, each fund's shares, its change on the day and since the base, and its
   weight. The shares come from the exchanges (上交所 a day for every fund per request, 深交所 a fund
   a month at a time), kept in `.akshare_data/web/etf_shares.parquet` from 2025-10-09 and topped up
   with the missing days on each visit (the first download takes about a minute). A day either

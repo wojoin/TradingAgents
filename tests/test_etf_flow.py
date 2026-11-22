@@ -199,3 +199,48 @@ def test_route(monkeypatch, tmp_path):
     r = c.get("/api/etf/broad?base=2026-01-05&range=6m")
     assert r.status_code == 200 and seen == {"base": "2026-01-05", "rng": "6m"}
     assert c.get("/api/etf/broad?base=2026-1-5").status_code == 422
+
+
+# --- the analysts' block -------------------------------------------------------------------------
+
+@pytest.fixture
+def report_data(monkeypatch):
+    """The analysts' report over ``REAL`` (and two made-up later days), with no network."""
+    from tradingagents.dataflows import broad_etf
+    rows = dict(REAL)
+    rows["2026-06-15"] = {c: v * 1.01 for c, v in REAL["2026-06-12"].items()}
+    rows["2026-06-16"] = {c: v * 1.02 for c, v in REAL["2026-06-12"].items()}
+    days = sorted(rows)
+    monkeypatch.setattr(etf_flow, "_trade_days", lambda: days)
+    seen = {}
+
+    def update(ds, **_):
+        seen["days"] = ds
+        return wide({d: rows[d] for d in ds}), "cache", None
+
+    monkeypatch.setattr(etf_flow, "update", update)
+    return broad_etf, seen
+
+
+def test_the_report_reads_the_index_to_the_analysis_date_only(report_data):
+    broad_etf, seen = report_data
+    text = broad_etf.get_broad_etf_flow("2026-06-12")
+    assert seen["days"][-1] == "2026-06-12"                       # nothing after the analysis date is asked for
+    assert "2026-06-15" not in text and "2026-06-16" not in text
+    assert "加仓指数 29.90" in text and "较前日 +0.05" in text       # base 2025-11-20, the 19 funds
+    assert "下轨 30 之下" in text                                    # 29.90: below the lower band
+    assert "2026-01-28 | -322.64" in text                           # the day-by-day table
+    assert "基期 2025-11-20" in text
+
+
+def test_the_report_names_the_zone_and_the_days_movers(report_data):
+    broad_etf, _ = report_data
+    text = broad_etf.get_broad_etf_flow("2026-06-16")
+    assert "截至 2026-06-16" in text
+    assert "在下轨 30 与上轨 70 之间" in text                         # 29.90 × 1.02 ≈ 30.50
+    assert "沪深300ETF华泰柏瑞" in text                               # the biggest mover that day
+
+
+def test_the_report_before_the_base_day_says_it_is_unavailable(report_data):
+    broad_etf, _ = report_data
+    assert "unavailable" in broad_etf.get_broad_etf_flow("2025-11-19")
