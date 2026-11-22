@@ -743,9 +743,10 @@ export interface EtfFund {
 export interface EtfDay {
   date: string; total: number; change: number | null; index: number
   index_change: number | null; rate5: number | null; rate20: number | null
-  // the funds that made half the day's change: [code, change in 亿份, % of the day's total change]
-  // (null on a day of subscriptions and redemptions about cancelling out: then the 3 biggest movers)
-  top: [string, number, number | null][]
+  // up to 10 funds by what each added to the day's total: [code, change in 亿份, % of the total];
+  // the first ``half`` of them make up half of it. A day of subscriptions and redemptions about
+  // cancelling out: the biggest movers either way, no %, half null.
+  top: [string, number, number | null][]; half: number | null
 }
 export interface EtfBroad {
   base: string; base_total: number; range: EtfRange; start: string; as_of: string

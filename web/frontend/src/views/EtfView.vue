@@ -80,6 +80,7 @@ const changeLines = computed<Line[]>(() => [{
 // The day's change against the day before's total shares, in %.
 const changePct = (d: EtfDay | undefined) =>
   !d || d.change === null || d.total === d.change ? null : (d.change / (d.total - d.change)) * 100
+const topCover = (d: EtfDay) => d.top.reduce((a, t) => a + (t[2] ?? 0), 0)
 const signedPct = (v: number) => `${v > 0 ? '+' : ''}${v.toFixed(2)}%`
 const indexLines = computed<Line[]>(() => [
   { name: '加仓指数', color: '#2563eb', points: days.value.map((d) => ({ time: d.date, value: d.index })) },
@@ -153,11 +154,21 @@ const cls = (v: number | null | undefined) => (!v ? '' : v > 0 ? 'up' : 'down')
             <span v-if="day && changePct(byDate.get(day)) !== null" :class="cls(byDate.get(day)!.change)">（{{ signedPct(changePct(byDate.get(day))!) }}）</span>
           </template>
         </LineChart>
-        <p v-if="shown?.top.length" class="small movers">
-          <span class="muted">{{ shown.date }} {{ shown.top[0][2] === null ? '变化最大（申赎相抵，合计变化很小）' : '贡献过半' }}：</span>
-          <span v-for="[code, v, share] in shown.top" :key="code">{{ names.get(code) || code }}
-            <b :class="cls(v)">{{ signed(v) }}亿份</b><span v-if="share !== null" :class="cls(v)">（{{ share.toFixed(1) }}%）</span></span>
-        </p>
+        <div v-if="shown?.top.length" class="movers">
+          <div class="small muted mhead">
+            <template v-if="shown.half === null">{{ shown.date }} 申赎大致相抵、合计变化很小，按变化大小列出 {{ shown.top.length }} 只（不计占比）</template>
+            <template v-else>{{ shown.date }} 按对合计的贡献排序：前 <b>{{ shown.half }}</b> 只贡献过半（彩色），这 {{ shown.top.length }} 只合计占比
+              <b>{{ topCover(shown).toFixed(1) }}%</b>；占比 = 该只份额变化 ÷ 当天合计变化</template>
+          </div>
+          <div class="mgrid" :style="{ gridTemplateRows: `repeat(${Math.ceil(shown.top.length / 2)}, auto)` }">
+            <div v-for="([code, v, share], i) in shown.top" :key="code" class="mrow" :class="{ rest: shown.half !== null && i >= shown.half }">
+              <span class="rank">{{ i + 1 }}</span>
+              <span class="mname">{{ names.get(code) || code }}</span>
+              <b :class="cls(v)">{{ signed(v) }}亿份</b>
+              <span class="mshare" :class="cls(v)">{{ share === null ? '—' : `${share.toFixed(1)}%` }}</span>
+            </div>
+          </div>
+        </div>
       </section>
 
       <section class="card">
@@ -259,7 +270,14 @@ h3 .small { font-weight: normal; margin-left: 6px; }
 .controls { display: flex; align-items: center; gap: 12px; }
 .date { margin-left: 6px; font: inherit; padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; }
 .sum { font-size: 13px; line-height: 1.8; font-variant-numeric: tabular-nums; }
-.movers { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 6px 0 0; }
+.movers { margin: 8px 0 0; }
+.mhead { margin-bottom: 6px; }
+.mgrid { display: grid; grid-auto-flow: column; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.mrow { display: grid; grid-template-columns: 20px minmax(0, 1fr) 100px 60px; align-items: center; gap: 8px; padding: 3px 0; border-bottom: 1px solid #f1f3f6; }
+.rank { color: var(--p-text-muted-color, #6b7785); }
+.mname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mrow b, .mshare { text-align: right; }
+.mrow.rest, .mrow.rest b, .mrow.rest .mshare { color: #9aa3ad; font-weight: normal; }
 .bad { color: var(--up); }
 .index { color: #2563eb; }
 .algo ol { margin: 8px 0; padding-left: 20px; font-size: 13px; line-height: 1.7; }

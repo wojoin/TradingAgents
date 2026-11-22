@@ -32,13 +32,20 @@ def wide(rows: dict) -> pd.DataFrame:
 
 # --- compute -------------------------------------------------------------------------------------
 
-def test_top_movers_stop_once_they_make_half_the_day():
+def test_top_movers_list_ten_and_mark_the_ones_making_half():
     d = pd.Series({"A": 50.0, "B": 30.0, "C": 25.0, "D": 20.0, "E": 15.0, "F": 60.0, "G": -10.0, "H": 10.0})
     assert d.sum() == 200
-    assert etf_flow.top_movers(d) == [["F", 60.0, 30.0], ["A", 50.0, 25.0]], "60 + 50 = 110 ≥ 100"
-    assert [t[0] for t in etf_flow.top_movers(-d)] == ["F", "A"], "a day of redemptions likewise"
+    top, half = etf_flow.top_movers(d)
+    assert [t[0] for t in top] == ["F", "A", "B", "C", "D", "E", "H", "G"], "by what each added, against last"
+    assert top[0] == ["F", 60.0, 30.0] and top[-1] == ["G", -10.0, -5.0]
+    assert half == 2, "60 + 50 = 110 ≥ 100"
+    top, half = etf_flow.top_movers(-d)
+    assert [t[0] for t in top][:2] == ["F", "A"] and half == 2, "a day of redemptions likewise"
+    many = pd.Series({f"X{i}": 1.0 for i in range(15)})
+    top, half = etf_flow.top_movers(many)
+    assert len(top) == 10 and half == 8, "at most 10; 8 of 15 make half"
     flat = pd.Series({"A": 5.0, "B": -5.0, "C": 1.0, "D": -0.5})
-    assert etf_flow.top_movers(flat) == [["A", 5.0, None], ["B", -5.0, None], ["C", 1.0, None]]
+    assert etf_flow.top_movers(flat) == ([["A", 5.0, None], ["B", -5.0, None], ["C", 1.0, None], ["D", -0.5, None]], None)
 
 
 def test_compute_totals_changes_index_and_rates():
@@ -197,10 +204,10 @@ def test_broad_shapes_the_page(cache, monkeypatch):
     assert days["2026-01-28"]["change"] == -329.48                       # exactly −329.475: half to even, as there
     assert days["2026-01-28"]["index_change"] == pytest.approx(100 * -329.48 / base_total, abs=0.01)
     assert days["2025-11-20"]["index_change"] is None
-    top = days["2026-01-28"]["top"]
-    assert top[0][0] == "510310"                                  # the day's biggest mover
-    assert all(t[1] < 0 for t in top), "a day of redemptions: the funds redeemed"
-    assert sum(t[2] for t in top) >= 50 and sum(t[2] for t in top[:-1]) < 50, "just enough for half"
+    top, half = days["2026-01-28"]["top"], days["2026-01-28"]["half"]
+    assert top[0][0] == "510310" and len(top) == 10               # the day's biggest mover first
+    assert all(t[1] < 0 for t in top[:half]), "a day of redemptions: the funds redeemed"
+    assert sum(t[2] for t in top[:half]) >= 50 and sum(t[2] for t in top[:half - 1]) < 50, "just enough for half"
     assert top[0][2] == pytest.approx(top[0][1] / -329.475 * 100, abs=0.01)
     assert len(out["funds"]) == 20
     hs300 = next(x for x in out["funds"] if x["code"] == "510300")

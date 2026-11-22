@@ -71,9 +71,9 @@ LOWER = 30                    # below it: time to cut positions
 RANGES = ("6m", "1y", "all")
 RETRY_S = 30 * 60             # a day not published yet is asked for again after this
 BASE_GAP = 7                  # a base day may fall back this many calendar days, to the trading day before
-TOP_SHARE = 0.5               # the day's movers shown: the biggest, until they make up half the day's change
-TOP_FLAT = 3                  # on a day whose total barely moved, the biggest movers either way
-FLAT = 0.1                    # ... a total under a tenth of the day's whole movement Σ|change|
+TOP_MAX = 10                  # the day's movers listed, by what each added to the day's total
+TOP_SHARE = 0.5               # the first of them that together make up half of it are marked
+FLAT = 0.1                    # a total under a tenth of the day's whole movement Σ|change|: no shares
 
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
 _tried: dict[tuple[str, str], float] = {}     # (exchange or code, day) -> when it came back without data
@@ -294,26 +294,27 @@ def round_half_even(v, nd: int = 2) -> float | None:
 _num = round_half_even
 
 
-def top_movers(d: pd.Series) -> list[list]:
-    """The funds that made the day: ``[[code, change in 亿份, % of the day's total change]]``.
+def top_movers(d: pd.Series) -> tuple[list[list], int | None]:
+    """The funds that made the day, ``([[code, change in 亿份, % of the day's total change]], half)``.
 
-    The funds moving the way the total did, biggest first, until together they make up half of
-    it (TOP_SHARE). On a day of subscriptions and redemptions about cancelling out (a total under
-    FLAT of Σ|change|), shares of the total mean nothing: the TOP_FLAT biggest movers either way.
+    Up to TOP_MAX funds by what each added to the total, biggest first (the ones moving against it,
+    with a negative share, last); ``half`` is how many of the first make up TOP_SHARE of it together.
+    On a day of subscriptions and redemptions about cancelling out (a total under FLAT of
+    Σ|change|), shares of the total mean nothing: the biggest movers either way, no share, and
+    ``half`` None.
     """
     net = d.sum()
     if not len(d) or abs(net) < FLAT * d.abs().sum() or abs(net) < 0.01:
-        big = d.reindex(d.abs().sort_values(ascending=False).index[:TOP_FLAT])
-        return [[c, _num(v), None] for c, v in big.items() if v]
-    out, cum = [], 0.0
-    for c, v in d.sort_values(ascending=net < 0).items():
-        if v * net <= 0:
-            break
-        out.append([c, _num(v), _num(v / net * 100)])
-        cum += v
+        big = d.reindex(d.abs().sort_values(ascending=False).index[:TOP_MAX])
+        return [[c, _num(v), None] for c, v in big.items() if v], None
+    rows = d.sort_values(ascending=net < 0).iloc[:TOP_MAX]
+    half, cum = 0, 0.0
+    for v in rows:
         if cum / net >= TOP_SHARE:
             break
-    return out
+        cum += v
+        half += 1
+    return [[c, _num(v), _num(v / net * 100)] for c, v in rows.items()], half
 
 
 def broad(base: str | None = None, rng: str = "1y") -> dict:
@@ -335,11 +336,11 @@ def broad(base: str | None = None, rng: str = "1y") -> dict:
     days = []
     for r in series[series["date"] >= start].itertuples(index=False):
         d = diff.loc[r.date].dropna()
-        top = top_movers(d)
+        top, half = top_movers(d)
         days.append({"date": r.date, "total": _num(r.total), "change": _num(r.change), "index": _num(r.index),
                      "index_change": _num(r.index_change),
                      "rate5": _num(r.rate5), "rate20": _num(r.rate20),
-                     "top": top})
+                     "top": top, "half": half})
 
     last, first = wide.loc[as_of], wide.loc[base_day]
     try:
