@@ -29,8 +29,8 @@ watch(() => props.code, async (c) => {
 
 type Key = keyof EtfHoldingRow
 const COLS: { key: Key; label: string; left?: boolean }[] = [
-  { key: 'weight', label: '持仓占比' }, { key: 'industry', label: '行业', left: true }, { key: 'price', label: '最新' }, { key: 'pct_chg', label: '涨幅' },
-  { key: 'turnover', label: '换手率' }, { key: 'amount', label: '成交额' }, { key: 'pe_ttm', label: '市盈率(TTM)' },
+  { key: 'weight', label: '持仓占比' }, { key: 'price', label: '最新' }, { key: 'pct_chg', label: '涨幅' },
+  { key: 'turnover', label: '换手率' }, { key: 'amount', label: '成交额' }, { key: 'industry', label: '行业', left: true }, { key: 'pe_ttm', label: '市盈率(TTM)' },
   { key: 'roe', label: 'ROE' }, { key: 'total_mv', label: '总市值' },
 ]
 const sortKey = ref<Key>('weight')
@@ -82,11 +82,11 @@ const cls = (v: number | null) => (!v ? '' : v > 0 ? 'up' : 'down')
             <td class="muted">{{ i + 1 }}</td>
             <td class="nm"><RouterLink :to="`/stock/${r.code}`" class="link">{{ r.name }}</RouterLink><span class="code">{{ r.code }}</span></td>
             <td class="r">{{ num(r.weight, 3) }}%</td>
-            <td class="ind" :title="r.industry ?? ''">{{ r.industry ?? '—' }}</td>
             <td class="r" :class="cls(r.pct_chg)">{{ num(r.price) }}</td>
             <td class="r" :class="cls(r.pct_chg)">{{ pct(r.pct_chg) }}</td>
             <td class="r">{{ r.turnover === null ? '—' : `${r.turnover.toFixed(2)}%` }}</td>
             <td class="r">{{ yi(r.amount) }}</td>
+            <td class="ind" :title="r.industry ?? ''">{{ r.industry ?? '—' }}</td>
             <td class="r">{{ r.pe_ttm === null ? '—' : r.pe_ttm < 0 ? '亏损' : r.pe_ttm.toFixed(2) }}</td>
             <td class="r" :class="{ down: r.roe !== null && r.roe < 0 }">{{ r.roe === null ? '—' : `${r.roe.toFixed(2)}%` }}</td>
             <td class="r">{{ yi(r.total_mv) }}</td>
