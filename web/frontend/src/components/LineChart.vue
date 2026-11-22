@@ -18,10 +18,12 @@ export interface Line {
 // the end); without it the legend is one wrapping row.
 // ``levels``: labelled horizontal lines (on the first line's scale), shown whether or not the
 // data reaches them; ``range``: the value axis fixed to [min, max] instead of fitted to the data;
-// ``markers``: a dot on every point.
+// ``markers``: a dot on every point; ``sync``: a day hovered on another chart, to put this chart's
+// crosshair and legend on too (charts side by side then follow each other, given each other's ``hover``).
 const props = withDefaults(defineProps<{
   lines: Line[]; format?: (v: number) => string; height?: number; pick?: boolean; rows?: string[][]
   levels?: { value: number; title: string; color?: string }[]; range?: [number, number]; markers?: boolean
+  sync?: string | null
 }>(), {
   format: (v: number) => v.toLocaleString('zh-CN'),
   height: 240,
@@ -42,7 +44,8 @@ let chart: IChartApi | null = null
 let series: ISeriesApi<SeriesType>[] = []
 
 const days = computed(() => props.lines[0]?.points.map((p) => p.time) || [])
-const shownDay = computed(() => hover.value ?? days.value[days.value.length - 1] ?? null)
+const shownDay = computed(() => hover.value ?? (props.sync && days.value.includes(props.sync) ? props.sync : null)
+  ?? days.value[days.value.length - 1] ?? null)
 const legend = computed(() =>
   props.lines.map((l) => ({
     name: l.name, color: l.color,
@@ -125,6 +128,9 @@ onMounted(() => {
     handleScale: false,
   })
   chart.subscribeCrosshairMove((p) => {
+    // Our own setCrosshairPosition for ``sync`` (a day but no mouse event) is not a hover; the mouse
+    // leaving comes without an event too, and is one.
+    if (!p.sourceEvent && p.time !== undefined) return
     hover.value = p.time === undefined ? null : formatDay(p.time)
     emit('hover', hover.value)
     const v0 = series[0] && p.point ? (p.seriesData.get(series[0]) as { value?: number } | undefined)?.value : undefined
@@ -151,6 +157,14 @@ onMounted(() => {
 })
 
 watch(() => props.lines, draw, { deep: false })
+
+// Follow another chart's hovered day: the crosshair on our first series' point that day.
+watch(() => props.sync, (day) => {
+  if (!chart || !series.length || hover.value) return
+  const p = day ? props.lines[0]?.points.find((x) => x.time === day) : undefined
+  if (p) chart.setCrosshairPosition(p.value, p.time as Time, series[0])
+  else chart.clearCrosshairPosition()
+})
 onBeforeUnmount(() => {
   chart?.remove()
   chart = null

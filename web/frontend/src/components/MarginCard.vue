@@ -50,6 +50,7 @@ const slopeLines = computed<Line[]>(() => [
   { name: '近5日斜率', color: FAST, points: days.value.flatMap((d) => (d.s5 === null ? [] : [{ time: d.date, value: d.s5 }])) },
   { name: '20日斜率', color: SLOW, points: days.value.flatMap((d) => (d.s20 === null ? [] : [{ time: d.date, value: d.s20 }])) },
 ])
+const hovered = ref<string | null>(null)       // the day under the mouse on any of the three charts
 const byDate = computed(() => new Map(days.value.map((d) => [d.date, d])))
 // 加快 / 由减转增 read as money coming in, 去杠杆 / 放缓 / 由增转减 as going out or tiring.
 const trendCls = (t: string | null | undefined) =>
@@ -101,16 +102,16 @@ const summary = computed(() => {
     </div>
     <p class="muted small sub">融资（借钱买股）加融券（借股卖出）的未还余额，反映杠杆资金的多少。余额持续增加说明加杠杆做多，单日大幅减少常是去杠杆、被动平仓，与指数同向放大波动。
       <span v-if="data?.note" class="bad">{{ data.note }}</span></p>
-    <LineChart v-if="data" :lines="balanceLines" :format="yi" :height="160">
+    <LineChart v-if="data" :lines="balanceLines" :format="yi" :height="160" :sync="hovered" @hover="hovered = $event">
       <template #legend="{ day }">
         <span v-if="day && byDate.get(day)" class="small">较前日 <b :class="cls(byDate.get(day)!.chg)">{{ signedYi(byDate.get(day)!.chg) }}</b>
           <span v-if="pctOf(byDate.get(day)!.chg, byDate.get(day)!.total) !== null" class="muted">（{{ signedPct(pctOf(byDate.get(day)!.chg, byDate.get(day)!.total)!) }}）</span></span>
       </template>
     </LineChart>
-    <LineChart v-if="data" :lines="changeLines" :format="signedYi" :height="110" />
+    <LineChart v-if="data" :lines="changeLines" :format="signedYi" :height="110" :sync="hovered" @hover="hovered = $event" />
     <template v-if="data && slopeLines[0].points.length">
       <p class="muted small sub">速率：余额每天平均增减多少（最小二乘斜率）。<b>橙线（近5日）在紫线（20日）之上 = 加杠杆在加快或去杠杆在放缓</b>，在其下 = 加杠杆在放缓或去杠杆在加快；穿过 0 轴是方向转变。</p>
-      <LineChart :lines="slopeLines" :format="perDay" :height="150" :levels="[{ value: 0, title: '' }]">
+      <LineChart :lines="slopeLines" :format="perDay" :height="150" :sync="hovered" @hover="hovered = $event" :levels="[{ value: 0, title: '' }]">
         <template #legend="{ day }">
           <b v-if="day && byDate.get(day)?.trend" class="tag" :class="trendCls(byDate.get(day)?.trend)">{{ byDate.get(day)?.trend }}</b>
         </template>
