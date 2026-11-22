@@ -188,7 +188,13 @@ def test_broad_shapes_the_page(cache, monkeypatch):
     assert days["2026-01-28"]["change"] == -329.48                       # exactly −329.475: half to even, as there
     assert days["2026-01-28"]["index_change"] == pytest.approx(100 * -329.48 / base_total, abs=0.01)
     assert days["2025-11-20"]["index_change"] is None
-    assert days["2026-01-28"]["top"][0][0] == "510310"            # the day's biggest mover
+    top = days["2026-01-28"]["top"]
+    assert top[0][0] == "510310"                                  # the day's biggest mover
+    assert len(top) == 10, "the top half of the 20 funds"
+    assert [abs(t[1]) for t in top] == sorted((abs(t[1]) for t in top), reverse=True)
+    assert all(0 < t[2] <= 100 for t in top) and sum(t[2] for t in top) <= 100.01   # shares of Σ|change|
+    assert top[0][2] == pytest.approx(abs(top[0][1]) / sum(abs(v) for v in (
+        (pd.Series(REAL["2026-01-28"]) - pd.Series(REAL["2026-01-27"])) / 1e8)) * 100, abs=0.01)
     assert len(out["funds"]) == 20
     hs300 = next(x for x in out["funds"] if x["code"] == "510300")
     assert hs300["since_base"] == pytest.approx((28624087700 - 89383087700) / 1e8)

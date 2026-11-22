@@ -20,6 +20,7 @@ again after half an hour.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -71,7 +72,7 @@ LOWER = 30                    # below it: time to cut positions
 RANGES = ("6m", "1y", "all")
 RETRY_S = 30 * 60             # a day not published yet is asked for again after this
 BASE_GAP = 7                  # a base day may fall back this many calendar days, to the trading day before
-TOP = 3                       # the day's biggest movers named in the tooltip
+TOP_SHARE = 0.5               # the day's biggest movers shown: the top half of the funds by |change|
 
 _UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
 _tried: dict[tuple[str, str], float] = {}     # (exchange or code, day) -> when it came back without data
@@ -311,11 +312,13 @@ def broad(base: str | None = None, rng: str = "1y") -> dict:
     days = []
     for r in series[series["date"] >= start].itertuples(index=False):
         d = diff.loc[r.date].dropna()
-        top = d.reindex(d.abs().sort_values(ascending=False).index[:TOP])
+        moved = d.abs().sum()
+        top = d.reindex(d.abs().sort_values(ascending=False).index[:math.ceil(len(d) * TOP_SHARE)])
         days.append({"date": r.date, "total": _num(r.total), "change": _num(r.change), "index": _num(r.index),
                      "index_change": _num(r.index_change),
                      "rate5": _num(r.rate5), "rate20": _num(r.rate20),
-                     "top": [[c, _num(v)] for c, v in top.items()]})
+                     # [code, change in 亿份, its share of the day's whole movement Σ|change| in %]
+                     "top": [[c, _num(v), _num(abs(v) / moved * 100) if moved else None] for c, v in top.items()]})
 
     last, first = wide.loc[as_of], wide.loc[base_day]
     try:
