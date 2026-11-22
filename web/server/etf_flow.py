@@ -32,28 +32,29 @@ from tradingagents.dataflows.vendors.akshare import store
 
 log = logging.getLogger(__name__)
 
-# (code, name, exchange), by size, largest first: shares × price on 2026-11-20 (亿元).
+# (code, name, exchange). The order is only where a list starts: the page and the analysts rank the
+# funds by each day's own size (shares × that day's close, see ``sizes``), which moves from day to day.
 FUNDS: list[tuple[str, str, str]] = [
-    ("510300", "沪深300ETF华泰柏瑞", "SH"),   # 2217.3
-    ("159915", "创业板ETF易方达", "SZ"),      # 1185.8
-    ("510310", "沪深300ETF易方达", "SH"),     # 1112.3
-    ("159919", "沪深300ETF嘉实", "SZ"),       #  903.9
-    ("510330", "沪深300ETF华夏", "SH"),       #  835.2
-    ("510500", "中证500ETF南方", "SH"),       #  734.2
-    ("510050", "上证50ETF华夏", "SH"),        #  699.9
-    ("588080", "科创50ETF易方达", "SH"),      #  583.6
-    ("512100", "中证1000ETF南方", "SH"),      #  552.0
-    ("159952", "创业板ETF广发", "SZ"),        #  192.7
-    ("510180", "上证180ETF华安", "SH"),       #  161.6
-    ("588050", "科创50ETF工银", "SH"),        #   86.6
-    ("159922", "中证500ETF嘉实", "SZ"),       #   78.5
-    ("512500", "中证500ETF华夏", "SH"),       #   67.3
-    ("560010", "中证1000ETF广发", "SH"),      #   61.8
-    ("159845", "中证1000ETF华夏", "SZ"),      #   56.4
-    ("515800", "中证800ETF汇添富", "SH"),     #   43.4
-    ("159901", "深证100ETF易方达", "SZ"),     #   34.6
-    ("159629", "中证1000ETF富国", "SZ"),      #   18.8
-    ("510230", "金融ETF国泰", "SH"),          #    7.4
+    ("510300", "沪深300ETF华泰柏瑞", "SH"),
+    ("159915", "创业板ETF易方达", "SZ"),
+    ("510310", "沪深300ETF易方达", "SH"),
+    ("159919", "沪深300ETF嘉实", "SZ"),
+    ("510330", "沪深300ETF华夏", "SH"),
+    ("510500", "中证500ETF南方", "SH"),
+    ("510050", "上证50ETF华夏", "SH"),
+    ("588080", "科创50ETF易方达", "SH"),
+    ("512100", "中证1000ETF南方", "SH"),
+    ("159952", "创业板ETF广发", "SZ"),
+    ("510180", "上证180ETF华安", "SH"),
+    ("588050", "科创50ETF工银", "SH"),
+    ("159922", "中证500ETF嘉实", "SZ"),
+    ("512500", "中证500ETF华夏", "SH"),
+    ("560010", "中证1000ETF广发", "SH"),
+    ("159845", "中证1000ETF华夏", "SZ"),
+    ("515800", "中证800ETF汇添富", "SH"),
+    ("159901", "深证100ETF易方达", "SZ"),
+    ("159629", "中证1000ETF富国", "SZ"),
+    ("510230", "金融ETF国泰", "SH"),
 ]
 # The list shown in the reference video stops at 19 (its rows 2-20), but its charts include 159922 too:
 # with it they match to the last digit shown (2026-01-28 −329.48亿份, 2026-11-03 +196.98亿份; on base
@@ -200,6 +201,56 @@ def update(days: list[str], *, fetch_sse=fetch_sse, fetch_szse=fetch_szse) -> tu
     return wide, source, "；".join(notes) or None
 
 
+# --- size: shares × the day's close ----------------------------------------------------------------
+
+def fetch_close(code: str) -> dict[str, float]:
+    """新浪: one fund's daily closes since it listed (YYYY-MM-DD -> price), one request."""
+    df = store.ak().fund_etf_hist_sina(symbol=("sh" if code in SH else "sz") + code)
+    return dict(zip(pd.to_datetime(df["date"]).dt.strftime("%Y-%m-%d"), pd.to_numeric(df["close"], errors="coerce"),
+                    strict=True))
+
+
+def _closes_path() -> Path:
+    return store.root() / "web" / "etf_closes.parquet"
+
+
+def closes(day: str) -> pd.DataFrame:
+    """The funds' closes (date × code) to ``day``, from disk; a fund without ``day`` on disk is fetched
+    again (at most every ``RETRY_S`` when the day is still missing). A fund that fails is left as it was."""
+    path = _closes_path()
+    kept = pd.read_parquet(path) if path.exists() else pd.DataFrame(columns=["date", "code", "close"])
+    have = set(zip(kept["date"], kept["code"], strict=True))
+    now = time.time()
+    rows: list[tuple[str, str, float]] = []
+    for code in NAMES:
+        if (day, code) in have or _recent(("close", code + day), now):
+            continue
+        got = _retry(fetch_close, code)
+        if got is None:
+            continue
+        rows += [(d, code, v) for d, v in got.items() if d >= START and pd.notna(v)]
+        if day not in got:
+            _tried[("close", code + day)] = now
+    if rows:
+        new = pd.DataFrame(rows, columns=["date", "code", "close"])
+        kept = (pd.concat([kept, new]) if len(kept) else new).drop_duplicates(["date", "code"], keep="last")
+        kept = kept.sort_values(["date", "code"]).reset_index(drop=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        kept.to_parquet(path)
+    part = kept[(kept["date"] <= day) & kept["code"].isin(NAMES)]
+    return part.pivot(index="date", columns="code", values="close").sort_index().astype(float)
+
+
+def sizes(day: str, wide: pd.DataFrame) -> pd.Series:
+    """Each fund's size on ``day`` in 亿元 (its shares × the day's close, or the last close before it),
+    largest first; a fund with no close is left out."""
+    px = closes(day).ffill()
+    if px.empty:
+        return pd.Series(dtype=float)
+    out = (wide.loc[day] * px.iloc[-1].reindex(wide.columns) / 1e8).dropna()
+    return out.sort_values(ascending=False)
+
+
 # --- the series ----------------------------------------------------------------------------------
 
 def compute(wide: pd.DataFrame, base: str) -> pd.DataFrame:
@@ -257,12 +308,21 @@ def broad(base: str | None = None, rng: str = "1y") -> dict:
                      "top": [[c, _num(v)] for c, v in top.items()]})
 
     last, first = wide.loc[as_of], wide.loc[base_day]
+    try:
+        size = sizes(as_of, wide)
+    except Exception as e:                                      # noqa: BLE001 - the index stands without it
+        log.warning("ETF sizes: %s", e)
+        size = pd.Series(dtype=float)
+    if size.empty:
+        note = "；".join(x for x in (note, "规模暂缺（取不到收盘价）") if x)
     funds = [{"code": c, "name": n, "exchange": x,
+              "size": _num(size.get(c)),
               "shares": _num(last[c] / 1e8, 4),
               "day": _num(diff.loc[as_of, c], 4),
               "since_base": _num((last[c] - first[c]) / 1e8, 4),
               "since_base_pct": _num(100 * (last[c] / first[c] - 1)),
               "weight": _num(100 * first[c] / first.sum(), 4)}
              for c, n, x in FUNDS]
+    funds.sort(key=lambda f: (f["size"] is None, -(f["size"] or 0), -f["weight"]))   # the day's size, largest first
     return {"base": base_day, "base_total": _num(first.sum() / 1e8), "range": rng, "start": start, "as_of": as_of, "source": source, "note": note,
             "funds": funds, "days": days}

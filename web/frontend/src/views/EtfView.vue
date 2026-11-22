@@ -209,12 +209,15 @@ const cls = (v: number | null | undefined) => (!v ? '' : v > 0 ? 'up' : 'down')
       </section>
 
       <section class="card">
-        <h3>{{ data.funds.length }} 只成分 <span class="muted small">较基期 {{ data.base }}；权重是基期份额占合计的比例，即它在加仓指数里的分量</span></h3>
-        <DataTable :value="data.funds" size="small" sort-field="weight" :sort-order="-1" class="num">
+        <h3>{{ data.funds.length }} 只成分 <span class="muted small">按 {{ data.as_of }} 的规模排序（规模 = 当日份额 × 当日收盘价，每天都在变）；较基期 {{ data.base }}；权重是基期份额占合计的比例，即它在加仓指数里的分量</span></h3>
+        <DataTable :value="data.funds" size="small" sort-field="size" :sort-order="-1" class="num">
           <Column field="code" header="代码" sortable />
           <Column field="name" header="名称" sortable />
           <Column field="exchange" header="市场" sortable>
             <template #body="{ data: f }">{{ f.exchange === 'SH' ? '沪' : '深' }}</template>
+          </Column>
+          <Column field="size" header="规模(亿元)" sortable>
+            <template #body="{ data: f }">{{ f.size === null ? '—' : f.size.toFixed(1) }}</template>
           </Column>
           <Column field="shares" header="份额(亿份)" sortable>
             <template #body="{ data: f }">{{ f.shares.toFixed(2) }}</template>

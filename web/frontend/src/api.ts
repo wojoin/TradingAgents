@@ -732,6 +732,7 @@ export interface Quote extends MarketRow {
 export type EtfRange = '6m' | '1y' | 'all'
 export interface EtfFund {
   code: string; name: string; exchange: 'SH' | 'SZ'
+  size: number | null      // 亿元: shares × the day's close (null when no close could be had)
   shares: number; day: number | null; since_base: number; since_base_pct: number; weight: number
 }
 export interface EtfDay {

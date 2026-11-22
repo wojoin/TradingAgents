@@ -9,6 +9,7 @@ are created or redeemed, so their total is where the big money shows. This reads
              the base total); 较前日 = the day's change ÷ the base total × 100
   5 / 20 日  the index's change over 5 / 20 trading days: the speed of adding or redeeming
   上轨 / 下轨 above 70 the bottom is near; below 30 it is time to cut positions
+  规模       each fund's shares × its close that day (亿元): the funds are ranked by it, day by day
 
 Imported lazily, so a checkout without the web app gives a plain "unavailable" note. Nothing after
 the analysis date is read: the days asked for stop at it.
@@ -28,6 +29,26 @@ def _f(v, nd: int = 2, sign: bool = False) -> str:
     if v is None or pd.isna(v):
         return "—"
     return f"{float(v):+.{nd}f}" if sign else f"{float(v):.{nd}f}"
+
+
+def _by_size(etf_flow, wide: pd.DataFrame, day: str, base: str) -> list[str]:
+    """The funds ranked by their size that day (shares × close), with shares and their changes."""
+    try:
+        size = etf_flow.sizes(day, wide)
+    except Exception:  # noqa: BLE001 - the ranking is extra: without closes, by shares
+        size = pd.Series(dtype=float)
+    shares, prev = wide.loc[day], (wide.shift(1).loc[day])
+    first = wide.loc[wide.index[wide.index <= base][-1]]
+    if size.empty:
+        order, head = shares.sort_values(ascending=False).index, f"按 {day} 份额排序（收盘价暂缺，规模未算）："
+    else:
+        order = list(size.index) + [c for c in shares.index if c not in size.index]
+        head = f"按 {day} 规模排序（规模 = 当日份额 × 当日收盘价）："
+    lines = ["", head, "| 名称 | 规模(亿元) | 份额(亿份) | 当日变化(亿份) | 较基期 |", "|---|---|---|---|---|"]
+    for c in order:
+        lines.append(f"| {etf_flow.NAMES[c]} | {_f(size.get(c))} | {_f(shares[c] / 1e8)} | "
+                     f"{_f((shares[c] - prev[c]) / 1e8, sign=True)} | {_f(100 * (shares[c] / first[c] - 1), 1, sign=True)}% |")
+    return lines
 
 
 def get_broad_etf_flow(curr_date: str) -> str:
@@ -77,6 +98,7 @@ def get_broad_etf_flow(curr_date: str) -> str:
             f"位置：{zone}。基期以来最低 {_f(since.loc[lo, 'index'])}（{lo}），最高 {_f(since.loc[hi, 'index'])}（{hi}）。"]
     if len(top):
         out.append("当日份额变化最大：" + "，".join(f"{etf_flow.NAMES[c]} {_f(v, sign=True)} 亿份" for c, v in top.items()) + "。")
+    out += _by_size(etf_flow, wide, day, base)
     out += ["", "| 日期 | 份额变化(亿份) | 加仓指数 | 较前日 | 5日速率 | 20日速率 |", "|---|---|---|---|---|---|"]
     for d, x in s.tail(ROWS).iterrows():
         out.append(f"| {d} | {_f(x['change'], sign=True)} | {_f(x['index'])} | {_f(x['index_change'], sign=True)} | "

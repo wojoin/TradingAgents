@@ -106,11 +106,27 @@ class Fakes:
         return {d: v[code] for d, v in REAL.items() if start <= d <= end}
 
 
+class Closes:
+    """Sina's daily closes: 1.0 on every day of ``REAL`` (and the made-up days), 4.0 for 510300 from
+    2026-06-12; a ``missing`` day is not there yet."""
+
+    def __init__(self, missing=()):
+        self.calls: list[str] = []
+        self.missing = set(missing)
+
+    def __call__(self, code):
+        self.calls.append(code)
+        days = sorted(REAL) + ["2026-06-15", "2026-06-16", "2026-06-17"]
+        return {d: (4.0 if code == "510300" and d >= "2026-06-12" else 1.0) for d in days if d not in self.missing}
+
+
 @pytest.fixture
 def cache(tmp_path, monkeypatch):
     monkeypatch.setattr(etf_flow, "_path", lambda: tmp_path / "etf_shares.parquet")
     monkeypatch.setattr(etf_flow, "_tried", {})
     monkeypatch.setattr(etf_flow, "_sleep", lambda s: None)
+    monkeypatch.setattr(etf_flow, "_closes_path", lambda: tmp_path / "etf_closes.parquet")
+    monkeypatch.setattr(etf_flow, "fetch_close", Closes())
     return tmp_path / "etf_shares.parquet"
 
 
@@ -203,9 +219,12 @@ def test_route(monkeypatch, tmp_path):
 # --- the analysts' block -------------------------------------------------------------------------
 
 @pytest.fixture
-def report_data(monkeypatch):
+def report_data(monkeypatch, tmp_path):
     """The analysts' report over ``REAL`` (and two made-up later days), with no network."""
     from tradingagents.dataflows import broad_etf
+    monkeypatch.setattr(etf_flow, "_closes_path", lambda: tmp_path / "etf_closes.parquet")
+    monkeypatch.setattr(etf_flow, "fetch_close", Closes())
+    monkeypatch.setattr(etf_flow, "_tried", {})
     rows = dict(REAL)
     rows["2026-06-15"] = {c: v * 1.01 for c, v in REAL["2026-06-12"].items()}
     rows["2026-06-16"] = {c: v * 1.02 for c, v in REAL["2026-06-12"].items()}
@@ -249,3 +268,67 @@ def test_the_report_below_the_lower_band_says_cut_positions(report_data):
 def test_the_report_before_the_base_day_says_it_is_unavailable(report_data):
     broad_etf, _ = report_data
     assert "unavailable" in broad_etf.get_broad_etf_flow("2025-11-19")
+
+
+# --- size: shares × the day's close ---------------------------------------------------------------
+
+def test_sizes_are_the_days_shares_times_its_close_and_their_order_moves(cache):
+    w = wide(REAL)
+    a = etf_flow.sizes("2026-06-11", w)
+    b = etf_flow.sizes("2026-06-12", w)
+    assert a["510300"] == pytest.approx(28730287700 / 1e8)               # close 1.0
+    assert b["510300"] == pytest.approx(4 * 28624087700 / 1e8)           # close 4.0 that day
+    assert list(a.index[:2]) == ["510300", "510310"] and a.is_monotonic_decreasing
+    assert b.index[0] == "510300" and b.iloc[0] > 4 * b.iloc[1]          # each day ranked on its own
+
+
+def test_closes_are_kept_and_only_a_missing_day_is_asked_for_again(cache, monkeypatch):
+    w = wide(REAL)
+    etf_flow.sizes("2026-06-12", w)
+    first = etf_flow.fetch_close
+    assert sorted(first.calls) == sorted(etf_flow.NAMES)                  # one request per fund
+    again = Closes()
+    monkeypatch.setattr(etf_flow, "fetch_close", again)
+    etf_flow.sizes("2026-06-12", w)
+    assert again.calls == []                                              # on disk
+
+
+def test_a_day_without_a_close_uses_the_last_close_before_it(cache, monkeypatch):
+    monkeypatch.setattr(etf_flow, "fetch_close", Closes(missing={"2026-06-12"}))
+    s = etf_flow.sizes("2026-06-12", wide(REAL))
+    assert s["510300"] == pytest.approx(28624087700 / 1e8)               # the 06-11 close, 1.0
+
+
+def test_broad_lists_the_funds_by_the_days_size(cache, monkeypatch):
+    monkeypatch.setattr(etf_flow, "_trade_days", lambda: list(REAL))
+    f = Fakes()
+    monkeypatch.setattr(etf_flow, "fetch_sse", f.sse)
+    monkeypatch.setattr(etf_flow, "fetch_szse", f.szse)
+    out = etf_flow.broad(None, "all")
+    sizes = [x["size"] for x in out["funds"]]
+    assert sizes == sorted(sizes, reverse=True) and out["funds"][0]["code"] == "510300"
+    assert out["funds"][0]["size"] == pytest.approx(4 * 28624087700 / 1e8, abs=0.01)
+
+
+def test_broad_without_closes_still_serves_the_index(cache, monkeypatch):
+    monkeypatch.setattr(etf_flow, "_trade_days", lambda: list(REAL))
+    f = Fakes()
+    monkeypatch.setattr(etf_flow, "fetch_sse", f.sse)
+    monkeypatch.setattr(etf_flow, "fetch_szse", f.szse)
+
+    def down(code):
+        raise ConnectionError("新浪 down")
+
+    monkeypatch.setattr(etf_flow, "fetch_close", down)
+    out = etf_flow.broad(None, "all")
+    assert all(x["size"] is None for x in out["funds"])
+    assert "规模" in out["note"]
+    assert {d["date"]: d for d in out["days"]}["2026-06-12"]["index"] == pytest.approx(30.07, abs=0.01)
+
+
+def test_the_report_lists_the_funds_by_the_days_size(report_data):
+    broad_etf, _ = report_data
+    text = broad_etf.get_broad_etf_flow("2026-06-12")
+    assert "按 2026-06-12 规模排序" in text
+    table = text[text.index("按 2026-06-12 规模排序"):]
+    assert table.index("沪深300ETF华泰柏瑞") < table.index("沪深300ETF易方达")
