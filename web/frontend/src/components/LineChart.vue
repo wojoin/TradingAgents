@@ -129,8 +129,9 @@ onMounted(() => {
   })
   chart.subscribeCrosshairMove((p) => {
     // Our own setCrosshairPosition for ``sync`` (a day but no mouse event) is not a hover; the mouse
-    // leaving comes without an event too, and is one.
-    if (!p.sourceEvent && p.time !== undefined) return
+    // leaving comes without an event too, and is one (when the mouse was on us: a following chart
+    // clearing its crosshair is not).
+    if (!p.sourceEvent && (p.time !== undefined || hover.value === null)) return
     hover.value = p.time === undefined ? null : formatDay(p.time)
     emit('hover', hover.value)
     const v0 = series[0] && p.point ? (p.seriesData.get(series[0]) as { value?: number } | undefined)?.value : undefined
@@ -164,7 +165,13 @@ watch(() => props.sync, (day) => {
   const p = day ? props.lines[0]?.points.find((x) => x.time === day) : undefined
   if (p) chart.setCrosshairPosition(p.value, p.time as Time, series[0])
   else chart.clearCrosshairPosition()
+  // The tooltip box too, over that point.
+  const x = p ? chart.timeScale().timeToCoordinate(p.time as Time) : null
+  const y = p ? series[0].priceToCoordinate(p.value) : null
+  tipAt.value = x !== null && y !== null ? { x, y } : null
 })
+// The day the tooltip box is for: the mouse's, or the followed one.
+const tipDay = computed(() => hover.value ?? (props.sync && tipAt.value ? props.sync : null))
 onBeforeUnmount(() => {
   chart?.remove()
   chart = null
@@ -188,8 +195,8 @@ onBeforeUnmount(() => {
     </div>
     <div class="plot">
       <div ref="el" :style="{ height: `${height}px` }" />
-      <div v-if="$slots.tooltip && tipAt && hover" class="tip" :style="tipStyle">
-        <slot name="tooltip" :day="hover" />
+      <div v-if="$slots.tooltip && tipAt && tipDay" class="tip" :style="tipStyle">
+        <slot name="tooltip" :day="tipDay" />
       </div>
       <div v-if="near && lines[near.i]" class="pick" :style="pickStyle">
         <i class="dot" :style="{ background: lines[near.i].color }" />{{ lines[near.i].name }}

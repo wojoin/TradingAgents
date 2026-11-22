@@ -144,7 +144,7 @@ const cls = (v: number | null | undefined) => (!v ? '' : v > 0 ? 'up' : 'down')
 
       <section class="card">
         <h3>每日份额变化 <span class="muted small">{{ data.funds.length }} 只合计，亿份（原始数据，噪声大）</span></h3>
-        <LineChart :lines="changeLines" :format="yi" :height="200" @hover="hovered = $event" />
+        <LineChart :lines="changeLines" :format="yi" :height="200" :sync="hovered" @hover="hovered = $event" />
         <p v-if="shown?.top.length" class="small movers">
           <span class="muted">{{ shown.date }} 变化最大：</span>
           <span v-for="[code, v] in shown.top" :key="code">{{ names.get(code) || code }}
@@ -155,7 +155,7 @@ const cls = (v: number | null | undefined) => (!v ? '' : v > 0 ? 'up' : 'down')
       <section class="card">
         <h3>加仓指数 <span class="muted small">合计份额 ÷ 基期合计 × 100。上轨 {{ UPPER }}：升到它之上，底部区间快出来了，相对接近底部；
           下轨 {{ LOWER }}：跌到它之下，需要减仓了</span></h3>
-        <LineChart :lines="indexLines" :format="pts" :height="260" :levels="LEVELS">
+        <LineChart :lines="indexLines" :format="pts" :height="260" :levels="LEVELS" :sync="hovered" @hover="hovered = $event">
           <template #tooltip="{ day }">
             <div><b>{{ day }}</b></div>
             <div>加仓指数 <b class="index">{{ byDate.get(day)?.index.toFixed(2) }}</b></div>
@@ -169,7 +169,7 @@ const cls = (v: number | null | undefined) => (!v ? '' : v > 0 ? 'up' : 'down')
 
       <section class="card">
         <h3>变化速率 <span class="muted small">加仓指数 5 日、20 日的变化（点）：上穿 0 是由减转加，越陡加得越快</span></h3>
-        <LineChart :lines="rateLines" :format="(v: number) => signed(v)" :height="180" :levels="[{ value: 0, title: '0' }]" />
+        <LineChart :lines="rateLines" :format="(v: number) => signed(v)" :height="180" :levels="[{ value: 0, title: '0' }]" :sync="hovered" @hover="hovered = $event" />
       </section>
 
       <section class="card algo">
