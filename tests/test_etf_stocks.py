@@ -33,6 +33,7 @@ def test_a_stock_sums_its_parts_from_each_fund():
     assert s["300750"]["amount"] == -18.0 and s["601318"]["amount"] == 12.0
     assert [x["code"] for x in r["stocks"]] == ["300750", "600519", "601318"], "by the size of the amount"
     assert len(etf_stocks.implied("2026-11-20", wide=WIDE, px=PX, w=W, top=1)["stocks"]) == 1
+    assert len(etf_stocks.implied("2026-11-20", wide=WIDE, px=PX, w=W, top=0)["stocks"]) == 3, "0: all"
 
 
 def test_an_earlier_day_uses_the_snapshot_then_and_a_missing_one_is_noted():
@@ -71,9 +72,10 @@ def test_the_route(monkeypatch):
     from fastapi.testclient import TestClient
 
     from web.server import app as app_mod
-    monkeypatch.setattr(etf_stocks, "implied", lambda day: {"date": day, "stocks": []})
+    monkeypatch.setattr(etf_stocks, "implied", lambda day, top: {"date": day, "top": top, "stocks": []})
     c = TestClient(app_mod.create_app() if hasattr(app_mod, "create_app") else app_mod.app)
-    assert c.get("/api/etf/stocks?date=2026-11-20").json() == {"date": "2026-11-20", "stocks": []}
+    assert c.get("/api/etf/stocks?date=2026-11-20").json() == {"date": "2026-11-20", "top": 50, "stocks": []}
+    assert c.get("/api/etf/stocks?top=0").json()["top"] == 0
     assert c.get("/api/etf/stocks?date=bad").status_code == 422
 
 

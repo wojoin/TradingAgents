@@ -26,7 +26,7 @@
   GET  /api/market/breadth             ?range=&end=: 涨停溢价 and 晋级率, size styles, new highs and lows, share above MAs
   GET/POST /api/market/sync             the snapshot sync for days not on disk yet: its status, or start it
   GET  /api/etf/broad                  ?base=&range=6m|1y|all: 宽基ETF, the 20 funds' shares, 加仓指数 and its rate
-  GET  /api/etf/stocks                 ?date=: what a day's share changes come to in each stock (亿元)
+  GET  /api/etf/stocks                 ?date=&top=: what a day's share changes come to in each stock (亿元; top 0: all)
   GET  /api/etf/holdings/{code}        one fund's constituents: weight, quote, TTM P/E, ROE, market value
   GET  /api/market/index/{code}/members today's constituents of an index (000300: 沪深300)
   GET  /api/watchlist                   the watchlist's groups and their stocks' rows (?rows=0: groups only)
@@ -266,8 +266,8 @@ def create_app(manager: RunManager | None = None, reports_root: Path | None = No
         return _guard(etf_flow.broad, base, range)
 
     @app.get("/api/etf/stocks")
-    def etf_stocks_day(date: str | None = day_q()):
-        return _guard(etf_stocks.implied, date)
+    def etf_stocks_day(date: str | None = day_q(), top: int = Query(etf_stocks.TOP, ge=0, le=5000)):
+        return _guard(lambda: etf_stocks.implied(date, top=top))
 
     @app.get("/api/etf/holdings/{code}")
     def etf_holdings(code: str):

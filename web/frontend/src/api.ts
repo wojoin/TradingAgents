@@ -810,7 +810,8 @@ export const api = {
   etfBroad: (range: EtfRange, base?: string) =>
     request<EtfBroad>(`/api/etf/broad?range=${range}${base ? `&base=${base}` : ''}`),
   etfHoldings: (code: string) => request<EtfHoldings>(`/api/etf/holdings/${code}`),
-  etfStocks: (date?: string) => request<EtfStocks>(`/api/etf/stocks${date ? `?date=${date}` : ''}`),
+  // top: how many stocks, the largest first (0: all)
+  etfStocks: (date: string, top: number) => request<EtfStocks>(`/api/etf/stocks?date=${date}&top=${top}`),
   options: () => request<Options>('/api/options'),
   startRun: (ticker: string, options?: Partial<RunOptions>) =>
     request<RunSummary>('/api/runs', {

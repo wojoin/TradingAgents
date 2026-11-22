@@ -109,8 +109,8 @@ def implied(day: str | None = None, *, wide: pd.DataFrame | None = None, px: pd.
 
     ``{date, total, funds: [{code, name, index, index_name, change, close, amount, weights_date}],
     stocks: [{code, name, amount, parts: [[fund code, 亿元]]}], count, note}``: funds by |amount|,
-    the ``top`` stocks by |amount|, each stock's parts by |amount|; ``count`` is how many stocks
-    there were in all.
+    the ``top`` stocks by |amount| (0: all), each stock's parts by |amount|; ``count`` is how many
+    stocks there were in all.
     """
     if wide is None:
         with etf_flow._lock:
@@ -154,11 +154,11 @@ def implied(day: str | None = None, *, wide: pd.DataFrame | None = None, px: pd.
         names = p.drop_duplicates("code").set_index("code")["name"]
         by = p.groupby("code")["amount"].sum()
         by = by.reindex(by.abs().sort_values(ascending=False).index)
-        for code, amount in by.iloc[:top].items():
-            mine = p[p["code"] == code]
-            mine = mine.reindex(mine["amount"].abs().sort_values(ascending=False).index)
+        p = p.reindex(p["amount"].abs().sort_values(ascending=False, kind="stable").index)
+        each = {c: list(zip(g["fund"], g["amount"], strict=True)) for c, g in p.groupby("code", sort=False)}
+        for code, amount in (by.iloc[:top] if top else by).items():
             stocks.append({"code": code, "name": names[code], "amount": etf_flow._num(amount, 4),
-                           "parts": [[f, etf_flow._num(a, 4)] for f, a in zip(mine["fund"], mine["amount"], strict=True)]})
+                           "parts": [[f, etf_flow._num(a, 4)] for f, a in each[code]]})
         count = len(by)
     else:
         count = 0
