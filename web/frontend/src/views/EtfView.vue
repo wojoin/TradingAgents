@@ -21,8 +21,9 @@ const UPPER = 70
 const LOWER = 30
 const LEVELS = [
   { value: 100, title: '基期 100' },
-  { value: UPPER, title: `上轨 ${UPPER} 接近底部`, color: UP },
-  { value: LOWER, title: `下轨 ${LOWER} 需减仓`, color: DOWN },
+  // The bands: just the line and its value on the axis (what they mean is in the chart's subtitle).
+  { value: UPPER, title: '', color: UP },
+  { value: LOWER, title: '', color: DOWN },
 ]
 
 function stored(key: string, fallback: string): string {
