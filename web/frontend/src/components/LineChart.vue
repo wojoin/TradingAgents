@@ -26,6 +26,9 @@ const props = withDefaults(defineProps<{
   pick: false,
 })
 
+// ``hover``: the day under the mouse, or null when it leaves the chart.
+const emit = defineEmits<{ hover: [day: string | null] }>()
+
 const el = ref<HTMLDivElement>()
 const hover = ref<string | null>(null)
 // The line under the mouse (within PICK_PX of it): its index in ``lines``, value and where to label it.
@@ -109,6 +112,7 @@ onMounted(() => {
   })
   chart.subscribeCrosshairMove((p) => {
     hover.value = p.time === undefined ? null : formatDay(p.time)
+    emit('hover', hover.value)
     if (!props.pick) return
     let best: { i: number; value: number; d: number } | null = null
     if (p.point && p.time !== undefined) {

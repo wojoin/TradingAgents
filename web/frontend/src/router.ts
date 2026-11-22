@@ -8,6 +8,7 @@ export const router = createRouter({
     { path: '/watchlist', name: 'watchlist', component: () => import('./views/WatchlistView.vue') },
     { path: '/stock/:code?', name: 'stock', component: () => import('./views/StockView.vue'), props: true },
     { path: '/market', name: 'market', component: () => import('./views/MarketView.vue') },
+    { path: '/etf', name: 'etf', component: () => import('./views/EtfView.vue') },
     { path: '/analysis', name: 'analysis', component: () => import('./views/AnalysisView.vue') },
     { path: '/guide', name: 'guide', component: () => import('./views/GuideView.vue') },
     { path: '/reports', redirect: '/analysis' },

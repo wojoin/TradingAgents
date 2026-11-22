@@ -122,6 +122,19 @@ A browser front end for TradingAgents, with a left-hand menu:
   up to 40 due boards a run) and 业绩预告 (a
   report period's forecasts, one a stock, by type and 申万 industry, from the events module's
   cache), the last in a sixth category, 业绩.
+- **宽基ETF** (broad-based ETFs): the shares of the 19 main broad-based ETFs the "national team"
+  holds (沪深300, 上证50, 中证500/800/1000, 创业板, 科创50, 深证100, 上证180 and 金融 funds). Their volume
+  can be traded back and forth to itself, so it says little; their shares only move when units are
+  created or redeemed, which is where the big money shows. Three charts over the same days: the 19's
+  total daily share change in 亿份 (raw, noisy; the day's three biggest movers named under it), the
+  加仓指数 (total shares ÷ the total on the base day × 100, base 2025-12-31 by default and any day can
+  be picked; each fund counts by its own shares on the base day) and its rate, the index's change over
+  5 and 20 trading days. Below, each fund's shares, its change on the day and since the base, and its
+  weight. The shares come from the exchanges (上交所 a day for every fund per request, 深交所 a fund
+  a month at a time), kept in `.akshare_data/web/etf_shares.parquet` from 2025-10-09 and topped up
+  with the missing days on each visit (the first download takes about a minute). A day either
+  exchange has not published yet is left out rather than counted as zero, and asked for again after
+  half an hour.
 - **分析** (analysis): start an analysis from a stock code or name (a name resolves to
   its code, and an ambiguous one lists the candidates), follow every agent live, and
   the saved reports in a table below, each downloadable as Markdown, HTML or a ZIP.

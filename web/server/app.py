@@ -25,6 +25,7 @@
   GET  /api/market/breadth/verdict/history  ?range=&end=: that reading on each day of a span, and how it went
   GET  /api/market/breadth             ?range=&end=: 涨停溢价 and 晋级率, size styles, new highs and lows, share above MAs
   GET/POST /api/market/sync             the snapshot sync for days not on disk yet: its status, or start it
+  GET  /api/etf/broad                  ?base=&range=6m|1y|all: 宽基ETF, the 19 funds' shares, 加仓指数 and its rate
   GET  /api/market/index/{code}/members today's constituents of an index (000300: 沪深300)
   GET  /api/watchlist                   the watchlist's groups and their stocks' rows (?rows=0: groups only)
   POST /api/watchlist/groups            create a group {"name", "color"} (at most 256)
@@ -66,6 +67,7 @@ from web.server import (
     breadth,
     breadth_verdict,
     concepts,
+    etf_flow,
     extras,
     market,
     reports,
@@ -255,6 +257,10 @@ def create_app(manager: RunManager | None = None, reports_root: Path | None = No
     def day_q():
         # A fresh Query for each parameter: FastAPI ties a shared one to the first name it serves.
         return Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+    @app.get("/api/etf/broad")
+    def etf_broad(base: str | None = day_q(), range: str = Query("1y")):  # noqa: A002
+        return _guard(etf_flow.broad, base, range)
 
     @app.get("/api/market/qvix")
     def market_qvix(range: str = Query("1y"), end: str | None = day_q()):  # noqa: A002

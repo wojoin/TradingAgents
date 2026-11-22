@@ -10,6 +10,7 @@ const MENU = [
   { to: '/watchlist', label: '自选', icon: 'pi pi-star', match: ['/watchlist'] },
   { to: '/stock', label: '个股', icon: 'pi pi-search', match: ['/stock'] },
   { to: '/market', label: '行情', icon: 'pi pi-table', match: ['/market'] },
+  { to: '/etf', label: '宽基ETF', icon: 'pi pi-chart-line', match: ['/etf'] },
   { to: '/analysis', label: '分析', icon: 'pi pi-chart-bar', match: ['/analysis', '/reports'] },
   { to: '/guide', label: '指标说明', icon: 'pi pi-book', match: ['/guide'] },
 ]

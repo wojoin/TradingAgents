@@ -728,6 +728,22 @@ export interface Quote extends MarketRow {
 }
 
 // A failed request: the HTTP status and the body's ``detail`` (a string or an object).
+// 宽基ETF: the 19 broad-based ETFs' shares (亿份), their daily change, the 加仓指数 and its rate.
+export type EtfRange = '6m' | '1y' | 'all'
+export interface EtfFund {
+  code: string; name: string; exchange: 'SH' | 'SZ'
+  shares: number; day: number | null; since_base: number; since_base_pct: number; weight: number
+}
+export interface EtfDay {
+  date: string; total: number; change: number | null; index: number
+  rate5: number | null; rate20: number | null; top: [string, number][]
+}
+export interface EtfBroad {
+  base: string; range: EtfRange; start: string; as_of: string
+  source: 'cache' | 'network' | 'stale'; note: string | null
+  funds: EtfFund[]; days: EtfDay[]
+}
+
 export class ApiError extends Error {
   readonly status: number
   readonly detail: unknown
@@ -759,6 +775,8 @@ async function request<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  etfBroad: (range: EtfRange, base?: string) =>
+    request<EtfBroad>(`/api/etf/broad?range=${range}${base ? `&base=${base}` : ''}`),
   options: () => request<Options>('/api/options'),
   startRun: (ticker: string, options?: Partial<RunOptions>) =>
     request<RunSummary>('/api/runs', {
