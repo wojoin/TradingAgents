@@ -1,8 +1,8 @@
-"""宽基ETF: the shares of the 19 broad-based ETFs the "national team" holds, day by day.
+"""宽基ETF: the shares of the 20 broad-based ETFs the "national team" holds, day by day.
 
 Their trading volume says little about money coming in or going out (a fund can be bought and sold to
 itself all day), but their shares only move when units are created or redeemed, so the shares are where
-the big money shows. Each day, for the 19 funds together:
+the big money shows. Each day, for the 20 funds together:
 
 - ``change``: the total shares against the day before, in 亿份 (the raw series: noisy day to day);
 - ``index`` (加仓指数): total shares ÷ total on the base day × 100. It is the running sum of ``change``
@@ -44,7 +44,7 @@ FUNDS: list[tuple[str, str, str]] = [
     ("159919", "沪深300ETF嘉实", "SZ"),
     ("512500", "中证500ETF华夏", "SH"),
     ("510500", "中证500ETF南方", "SH"),
-    # ("159922", "中证500ETF嘉实", "SZ"),  # not in the list (etf.jpg rows 2-20): left out
+    ("159922", "中证500ETF嘉实", "SZ"),
     ("515800", "中证800ETF汇添富", "SH"),
     ("512100", "中证1000ETF南方", "SH"),
     ("159845", "中证1000ETF华夏", "SZ"),
@@ -55,6 +55,9 @@ FUNDS: list[tuple[str, str, str]] = [
     ("159901", "深证100ETF易方达", "SZ"),
     ("510230", "金融ETF国泰", "SH"),
 ]
+# The list shown in the reference video stops at 19 (its rows 2-20), but its charts include 159922 too:
+# with it they match to the last digit shown (2026-01-28 −329.48亿份, 2026-11-03 +196.98亿份; on base
+# 2025-11-20, 2026-06-12 30.07 and +0.06); without it they are 6.84亿份, 0.37亿份, 0.17 and 0.01 off.
 SH = [c for c, _, x in FUNDS if x == "SH"]
 SZ = [c for c, _, x in FUNDS if x == "SZ"]
 NAMES = {c: n for c, n, _ in FUNDS}
@@ -81,7 +84,7 @@ def _path() -> Path:
 # --- the exchanges -------------------------------------------------------------------------------
 
 def fetch_sse(day: str) -> dict[str, float]:
-    """上交所: the 19 funds' Shanghai ones on ``day`` (YYYY-MM-DD), in 份; {} when not published."""
+    """上交所: the funds' Shanghai ones on ``day`` (YYYY-MM-DD), in 份; {} when not published."""
     r = requests.get("https://query.sse.com.cn/commonQuery.do", timeout=20, params={
         "isPagination": "true", "pageHelp.pageSize": "10000", "pageHelp.pageNo": "1", "pageHelp.beginPage": "1",
         "pageHelp.cacheSize": "1", "pageHelp.endPage": "1",

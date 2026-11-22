@@ -4,7 +4,7 @@ The 19 broad-based ETFs' volume can be traded back and forth, but their shares o
 are created or redeemed, so their total is where the big money shows. This reads what the web app's
 宽基ETF page computes (``web.server.etf_flow``: the shares from 上交所 and 深交所, kept on disk):
 
-  份额变化   the 19's total daily change in shares (亿份): the raw series, noisy day to day
+  份额变化   the 20's total daily change in shares (亿份): the raw series, noisy day to day
   加仓指数   total shares ÷ the total on the base day × 100 (each fund weighted by its part of
              the base total); 较前日 = the day's change ÷ the base total × 100
   5 / 20 日  the index's change over 5 / 20 trading days: the speed of adding or redeeming
@@ -31,7 +31,7 @@ def _f(v, nd: int = 2, sign: bool = False) -> str:
 
 
 def get_broad_etf_flow(curr_date: str) -> str:
-    """The 加仓指数 of the 19 broad-based ETFs on ``curr_date`` (or the last day published before
+    """The 加仓指数 of the 20 broad-based ETFs on ``curr_date`` (or the last day published before
     it), where it sits against its bands, its rates, the day's biggest movers and the last
     ``ROWS`` trading days."""
     try:
